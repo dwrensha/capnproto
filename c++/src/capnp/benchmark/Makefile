@@ -18,7 +18,7 @@ capnproto-%-middleman :
 	capnpc -I../../ $*.capnp --o c++
 	touch capnproto-%-middleman
 
-capnproto-% : capnproto-%-middleman
+capnproto-% : capnproto-%-middleman capnproto-%.c++
 	$(CXX) -c -I/usr/local/include $*.capnp.c++
 	$(CXX) -L/usr/local/lib -lcapnproto -I/usr/local/include capnproto-$*.c++ $*.capnp.o -o $@
 
@@ -26,7 +26,7 @@ protobuf-%-middleman :
 	protoc $*.proto --cpp_out=./
 	touch protobuf-$*-middleman
 
-protobuf-% : protobuf-%-middleman
+protobuf-% : protobuf-%-middleman protobuf-%.c++
 	$(CXX) -c $*.pb.cc
 	$(CXX) -L/opt/local/lib -lprotobuf protobuf-$*.c++ $*.pb.o -o $@
 
