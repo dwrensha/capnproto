@@ -1,5 +1,3 @@
-.PRECIOUS: *.cc
-
 CXX=g++-mp-4.8 -std=c++11
 
 BINARIES=capnproto-carsales capnproto-catrank capnproto-eval \
@@ -18,7 +16,7 @@ capnproto-%-middleman :
 	capnpc -I../../ $*.capnp --o c++
 	touch capnproto-%-middleman
 
-capnproto-% : capnproto-%-middleman capnproto-%.c++
+capnproto-% : capnproto-%-middleman capnproto-%.c++ common.h capnproto-common.h
 	$(CXX) -c -I/usr/local/include $*.capnp.c++
 	$(CXX) -L/usr/local/lib -lcapnproto -I/usr/local/include capnproto-$*.c++ $*.capnp.o -o $@
 
@@ -26,7 +24,7 @@ protobuf-%-middleman :
 	protoc $*.proto --cpp_out=./
 	touch protobuf-$*-middleman
 
-protobuf-% : protobuf-%-middleman protobuf-%.c++
+protobuf-% : protobuf-%-middleman protobuf-%.c++ common.h protobuf-common.h
 	$(CXX) -c $*.pb.cc
 	$(CXX) -L/opt/local/lib -lprotobuf protobuf-$*.c++ $*.pb.o -o $@
 
