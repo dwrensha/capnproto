@@ -1,4 +1,4 @@
-CXX=g++-mp-4.8 -std=c++11
+CXX=g++-mp-4.8 -std=c++11 -O2
 
 BINARIES=capnproto-carsales capnproto-catrank capnproto-eval \
 	protobuf-carsales protobuf-catrank protobuf-eval \
@@ -26,10 +26,10 @@ protobuf-%-middleman :
 
 protobuf-% : protobuf-%-middleman protobuf-%.c++ common.h protobuf-common.h
 	$(CXX) -c $*.pb.cc
-	$(CXX) -L/opt/local/lib -lprotobuf protobuf-$*.c++ $*.pb.o -o $@
+	$(CXX) /opt/local/lib/libprotobuf.a protobuf-$*.c++ $*.pb.o -o $@
 
 null-% : null-%.c++
 	$(CXX) $< -o $@
 
-runner :
+runner : runner.c++
 	$(CXX) runner.c++ -o runner
