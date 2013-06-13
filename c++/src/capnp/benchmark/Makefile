@@ -14,7 +14,7 @@ clean :
 
 capnproto-%-middleman :
 	capnpc -I../../ $*.capnp --o c++
-	touch capnproto-%-middleman
+	touch capnproto-$*-middleman
 
 capnproto-% : capnproto-%-middleman capnproto-%.c++ common.h capnproto-common.h
 	$(CXX) -c -I/usr/local/include $*.capnp.c++
