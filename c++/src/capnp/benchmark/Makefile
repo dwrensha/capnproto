@@ -18,7 +18,7 @@ capnproto-%-middleman :
 
 capnproto-% : capnproto-%-middleman capnproto-%.c++ common.h capnproto-common.h
 	$(CXX) -c -I/usr/local/include $*.capnp.c++
-	$(CXX) -L/usr/local/lib -lcapnproto -I/usr/local/include capnproto-$*.c++ $*.capnp.o -o $@
+	$(CXX) -L/usr/local/lib -lcapnp -I/usr/local/include capnproto-$*.c++ $*.capnp.o -o $@
 
 protobuf-%-middleman :
 	protoc $*.proto --cpp_out=./
