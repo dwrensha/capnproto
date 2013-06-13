@@ -129,7 +129,8 @@ public:
         loader.allocate<_::RawSchema::MemberInfo>(*count);
     uint pos = 0;
     for (auto& member: members) {
-      result[pos++] = _::RawSchema::MemberInfo(member.first.first, member.second);
+      result[pos++] = {kj::implicitCast<uint16_t>(member.first.first),
+                       kj::implicitCast<uint16_t>(member.second)};
     }
     KJ_DASSERT(pos == *count);
     return result;
@@ -1111,7 +1112,7 @@ kj::Array<Schema> SchemaLoader::Impl::getAllLoaded() const {
 // =======================================================================================
 
 SchemaLoader::SchemaLoader(): impl(kj::heap<Impl>()) {}
-SchemaLoader::~SchemaLoader() {}
+SchemaLoader::~SchemaLoader() noexcept(false) {}
 
 Schema SchemaLoader::get(uint64_t id) const {
   _::RawSchema* raw = impl->tryGet(id);

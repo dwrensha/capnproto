@@ -24,9 +24,6 @@
 #include "array.h"
 
 namespace kj {
-
-ArrayDisposer::~ArrayDisposer() {}
-
 namespace _ {  // private
 
 struct HeapArrayDisposer::ExceptionGuard {
@@ -42,7 +39,7 @@ struct HeapArrayDisposer::ExceptionGuard {
         elementSize(elementSize), elementCount(elementCount),
         destroyElement(destroyElement) {}
 
-  ~ExceptionGuard() {
+  ~ExceptionGuard() noexcept(false) {
     if (pos != nullptr) {
       destroyAll();
       operator delete(pos);

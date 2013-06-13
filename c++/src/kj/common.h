@@ -86,8 +86,8 @@ typedef unsigned char byte;
   classname& operator=(const classname&) = delete
 // Deletes the implicit copy constructor and assignment operator.
 
-#define KJ_EXPECT_TRUE(condition) __builtin_expect(condition, true)
-#define KJ_EXPECT_FALSE(condition) __builtin_expect(condition, false)
+#define KJ_LIKELY(condition) __builtin_expect(condition, true)
+#define KJ_UNLIKELY(condition) __builtin_expect(condition, false)
 // Branch prediction macros.  Evaluates to the condition given, but also tells the compiler that we
 // expect the condition to be true/false enough of the time that it's worth hard-coding branch
 // prediction.
@@ -100,11 +100,11 @@ typedef unsigned char byte;
 // Don't force inline in debug mode.
 #endif
 
-#define KJ_NORETURN __attribute__((noreturn));
-#define KJ_UNUSED __attribute__((unused));
+#define KJ_NORETURN __attribute__((noreturn))
+#define KJ_UNUSED __attribute__((unused))
 
 #if __clang__
-#define KJ_UNUSED_MEMBER __attribute__((unused));
+#define KJ_UNUSED_MEMBER __attribute__((unused))
 // Inhibits "unused" warning for member variables.  Only Clang produces such a warning, while GCC
 // complains if the attribute is set on members.
 #else
@@ -123,7 +123,7 @@ void inlineRequireFailure(
 #define KJ_IREQUIRE(condition, ...)
 #else
 #define KJ_IREQUIRE(condition, ...) \
-    if (KJ_EXPECT_TRUE(condition)); else ::kj::_::inlineRequireFailure( \
+    if (KJ_LIKELY(condition)); else ::kj::_::inlineRequireFailure( \
         __FILE__, __LINE__, #condition, #__VA_ARGS__, ##__VA_ARGS__)
 // Version of KJ_REQUIRE() which is safe to use in headers that are #included by users.  Used to
 // check preconditions inside inline methods.  KJ_INLINE_DPRECOND is particularly useful in that
@@ -180,6 +180,9 @@ template <typename T> struct Decay_ { typedef T Type; };
 template <typename T> struct Decay_<T&> { typedef typename Decay_<T>::Type Type; };
 template <typename T> struct Decay_<T&&> { typedef typename Decay_<T>::Type Type; };
 template <typename T> struct Decay_<T[]> { typedef typename Decay_<T*>::Type Type; };
+template <typename T> struct Decay_<const T[]> { typedef typename Decay_<const T*>::Type Type; };
+template <typename T, size_t s> struct Decay_<T[s]> { typedef typename Decay_<T*>::Type Type; };
+template <typename T, size_t s> struct Decay_<const T[s]> { typedef typename Decay_<const T*>::Type Type; };
 template <typename T> struct Decay_<const T> { typedef typename Decay_<T>::Type Type; };
 template <typename T> struct Decay_<volatile T> { typedef typename Decay_<T>::Type Type; };
 template <typename T> using Decay = typename Decay_<T>::Type;
@@ -340,7 +343,7 @@ public:
       ctor(value, other.value);
     }
   }
-  inline ~NullableValue() {
+  inline ~NullableValue() noexcept(noexcept(instance<T&>().~T())) {
     if (isSet) {
       dtor(value);
     }

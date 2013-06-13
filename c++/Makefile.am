@@ -68,10 +68,13 @@ includekj_HEADERS =                                            \
   src/kj/units.h                                               \
   src/kj/memory.h                                              \
   src/kj/array.h                                               \
+  src/kj/vector.h                                              \
   src/kj/string.h                                              \
   src/kj/exception.h                                           \
   src/kj/debug.h                                               \
-  src/kj/io.h
+  src/kj/io.h                                                  \
+  src/kj/tuple.h                                               \
+  src/kj/parse.h
 
 includecapnp_HEADERS =                                         \
   src/capnp/common.h                                           \
@@ -92,9 +95,9 @@ nodist_includecapnp_HEADERS =                                  \
 # No dynamic library for now since C++ binary compatibility is hard.
 # It may make more sense to have every module statically link Cap'n Proto
 # and pass around messages via memory pointers.
-lib_LIBRARIES = libcapnproto.a
+lib_LIBRARIES = libcapnp.a
 
-libcapnproto_a_SOURCES=                                        \
+libcapnp_a_SOURCES=                                            \
   src/kj/common.c++                                            \
   src/kj/units.c++                                             \
   src/kj/memory.c++                                            \
@@ -115,7 +118,7 @@ libcapnproto_a_SOURCES=                                        \
   src/capnp/stringify.c++                                      \
   src/capnp/serialize.c++                                      \
   src/capnp/serialize-packed.c++
-nodist_libcapnproto_a_SOURCES =                                \
+nodist_libcapnp_a_SOURCES =                                    \
   src/capnp/schema.capnp.c++
 
 # Source files intentionally not included in the dist at this time:
@@ -147,15 +150,18 @@ $(test_capnpc_outputs): test_capnpc_middleman
 
 BUILT_SOURCES = $(test_capnpc_outputs) $(capnpc_outputs)
 
-check_PROGRAMS = capnproto-test
-capnproto_test_LDADD = -lgtest -lgtest_main libcapnproto.a
-capnproto_test_SOURCES =                                       \
+check_PROGRAMS = capnp-test
+capnp_test_LDADD = -lgtest -lgtest_main libcapnp.a
+capnp_test_SOURCES =                                           \
   src/kj/common-test.c++                                       \
   src/kj/memory-test.c++                                       \
   src/kj/array-test.c++                                        \
   src/kj/string-test.c++                                       \
+  src/kj/exception-test.c++                                    \
   src/kj/debug-test.c++                                        \
   src/kj/units-test.c++                                        \
+  src/kj/tuple-test.c++                                        \
+  src/kj/parse-test.c++                                        \
   src/capnp/blob-test.c++                                      \
   src/capnp/endian-test.c++                                    \
   src/capnp/endian-fallback-test.c++                           \
@@ -171,6 +177,6 @@ capnproto_test_SOURCES =                                       \
   src/capnp/serialize-packed-test.c++                          \
   src/capnp/test-util.c++                                      \
   src/capnp/test-util.h
-nodist_capnproto_test_SOURCES = $(test_capnpc_outputs)
+nodist_capnp_test_SOURCES = $(test_capnpc_outputs)
 
-TESTS = capnproto-test
+TESTS = capnp-test

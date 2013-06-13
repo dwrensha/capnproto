@@ -37,7 +37,8 @@ class ArrayDisposer {
   // Much like Disposer from memory.h.
 
 protected:
-  virtual ~ArrayDisposer();
+  // Do not declare a destructor, as doing so will force a global initializer for
+  // HeapArrayDisposer::instance.
 
   virtual void disposeImpl(void* firstElement, size_t elementSize, size_t elementCount,
                            size_t capacity, void (*destroyElement)(void*)) const = 0;
@@ -231,7 +232,7 @@ public:
     other.endPtr = nullptr;
   }
   KJ_DISALLOW_COPY(ArrayBuilder);
-  inline ~ArrayBuilder() { dispose(); }
+  inline ~ArrayBuilder() noexcept(false) { dispose(); }
 
   inline operator ArrayPtr<T>() {
     return arrayPtr(ptr, pos);
@@ -240,6 +241,9 @@ public:
     return arrayPtr(ptr, pos);
   }
   inline ArrayPtr<T> asPtr() {
+    return arrayPtr(ptr, pos);
+  }
+  inline ArrayPtr<const T> asPtr() const {
     return arrayPtr(ptr, pos);
   }
 
@@ -303,6 +307,10 @@ public:
     pos = nullptr;
     endPtr = nullptr;
     return result;
+  }
+
+  inline bool isFull() const {
+    return pos == endPtr;
   }
 
 private:
@@ -506,7 +514,7 @@ struct CopyConstructArray_<T, Iterator, false> {
     T* start;
     T* pos;
     inline explicit ExceptionGuard(T* pos): start(pos), pos(pos) {}
-    ~ExceptionGuard() {
+    ~ExceptionGuard() noexcept(false) {
       while (pos > start) {
         dtor(*--pos);
       }

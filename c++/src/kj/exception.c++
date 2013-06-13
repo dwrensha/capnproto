@@ -29,8 +29,13 @@
 #include <stdlib.h>
 #include <exception>
 
+#if __GNUC__
+#include <cxxabi.h>
+#endif
+
 #if defined(__linux__) && !defined(NDEBUG)
 #include <stdio.h>
+#include <pthread.h>
 #endif
 
 namespace kj {
@@ -39,9 +44,29 @@ namespace {
 
 String getStackSymbols(ArrayPtr<void* const> trace) {
 #if defined(__linux__) && !defined(NDEBUG)
+  // We want to generate a human-readable stack trace.
+
+  // TODO(someday):  It would be really great if we could avoid farming out to addr2line and do
+  //   this all in-process, but that may involve onerous requirements like large library
+  //   dependencies or using -rdynamic.
+
+  // The environment manipulation is not thread-safe, so lock a mutex.  This could still be
+  // problematic if another thread is manipulating the environment in unrelated code, but there's
+  // not much we can do about that.  This is debug-only anyway and only an issue when LD_PRELOAD
+  // is in use.
+  static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+  pthread_mutex_lock(&mutex);
+
+  // Don't heapcheck / intercept syscalls for addr2line.
+  const char* preload = getenv("LD_PRELOAD");
+  String oldPreload;
+  if (preload != nullptr) {
+    oldPreload = heapString(preload);
+    unsetenv("LD_PRELOAD");
+  }
+
   // Get executable name from /proc/self/exe, then pass it and the stack trace to addr2line to
   // get file/line pairs.
-
   char exe[512];
   ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe));
   if (n < 0 || n >= static_cast<ssize_t>(sizeof(exe))) {
@@ -76,6 +101,12 @@ String getStackSymbols(ArrayPtr<void* const> trace) {
   while (fgets(line, sizeof(line), p) != nullptr) {}
 
   pclose(p);
+
+  if (oldPreload != nullptr) {
+    setenv("LD_PRELOAD", oldPreload.cStr(), true);
+  }
+
+  pthread_mutex_unlock(&mutex);
 
   return strArray(arrayPtr(lines, i), "");
 #else
@@ -249,7 +280,7 @@ ExceptionCallback::ExceptionCallback(): next(getExceptionCallback()) {
 
 ExceptionCallback::ExceptionCallback(ExceptionCallback& next): next(next) {}
 
-ExceptionCallback::~ExceptionCallback() {
+ExceptionCallback::~ExceptionCallback() noexcept(false) {
   if (&next != this) {
     threadLocalCallback = &next;
   }
@@ -293,9 +324,7 @@ public:
   }
 
   void logMessage(const char* file, int line, int contextDepth, String&& text) override {
-    if (contextDepth > 0) {
-      text = str(RepeatChar('_', contextDepth), mv(text));
-    }
+    text = str(RepeatChar('_', contextDepth), file, ":", line, ": ", mv(text));
 
     StringPtr textPtr = text;
 
@@ -319,7 +348,7 @@ private:
     getExceptionCallback().logMessage(e.getFile(), e.getLine(), 0, str(
         e.getNature(), e.getDurability() == Exception::Durability::TEMPORARY ? " (temporary)" : "",
         e.getDescription() == nullptr ? "" : ": ", e.getDescription(),
-        "\nstack: ", strArray(e.getStackTrace(), " ")));
+        "\nstack: ", strArray(e.getStackTrace(), " "), "\n"));
   }
 };
 
@@ -328,5 +357,85 @@ ExceptionCallback& getExceptionCallback() {
   ExceptionCallback* scoped = threadLocalCallback;
   return scoped != nullptr ? *scoped : defaultCallback;
 }
+
+// =======================================================================================
+
+namespace {
+
+#if __GNUC__
+
+// __cxa_eh_globals does not appear to be defined in a visible header.  This is what it looks like.
+struct DummyEhGlobals {
+  abi::__cxa_exception* caughtExceptions;
+  uint uncaughtExceptions;
+};
+
+uint uncaughtExceptionCount() {
+  // TODO(perf):  Use __cxa_get_globals_fast()?  Requires that __cxa_get_globals() has been called
+  //   from somewhere.
+  return reinterpret_cast<DummyEhGlobals*>(abi::__cxa_get_globals())->uncaughtExceptions;
+}
+
+#else
+#error "This needs to be ported to your compiler / C++ ABI."
+#endif
+
+}  // namespace
+
+UnwindDetector::UnwindDetector(): uncaughtCount(uncaughtExceptionCount()) {}
+
+bool UnwindDetector::isUnwinding() const {
+  return uncaughtExceptionCount() > uncaughtCount;
+}
+
+void UnwindDetector::catchExceptionsAsSecondaryFaults(_::Runnable& runnable) const {
+  // TODO(someday):  Attach the secondary exception to whatever primary exception is causing
+  //   the unwind.  For now we just drop it on the floor as this is probably fine most of the
+  //   time.
+  runCatchingExceptions(runnable);
+}
+
+namespace _ {  // private
+
+class RecoverableExceptionCatcher: public ExceptionCallback {
+  // Catches a recoverable exception without using try/catch.  Used when compiled with
+  // -fno-exceptions.
+
+public:
+  virtual ~RecoverableExceptionCatcher() noexcept(false) {}
+
+  void onRecoverableException(Exception&& exception) override {
+    if (caught == nullptr) {
+      caught = mv(exception);
+    } else {
+      // TODO(someday):  Consider it a secondary fault?
+    }
+  }
+
+  Maybe<Exception> caught;
+};
+
+Maybe<Exception> runCatchingExceptions(Runnable& runnable) {
+#if KJ_NO_EXCEPTIONS
+  RecoverableExceptionCatcher catcher;
+  runnable.run();
+  return mv(catcher.caught);
+#else
+  try {
+    runnable.run();
+    return nullptr;
+  } catch (Exception& e) {
+    return kj::mv(e);
+  } catch (std::exception& e) {
+    return Exception(Exception::Nature::OTHER, Exception::Durability::PERMANENT,
+                     "(unknown)", -1, str("std::exception: ", e.what()));
+  } catch (...) {
+    return Exception(Exception::Nature::OTHER, Exception::Durability::PERMANENT,
+                     "(unknown)", -1, str("Unknown non-KJ exception."));
+  }
+#endif
+}
+
+}  // namespace _ (private)
 
 }  // namespace kj
