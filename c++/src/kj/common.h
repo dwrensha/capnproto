@@ -30,6 +30,7 @@
 #ifndef KJ_COMMON_H_
 #define KJ_COMMON_H_
 
+#ifndef KJ_NO_COMPILER_CHECK
 #if __cplusplus < 201103L && !__CDT_PARSER__
   #error "This code requires C++11. Either your compiler does not support it or it is not enabled."
   #ifdef __GNUC__
@@ -42,6 +43,15 @@
   #if __clang__
     #if __clang_major__ < 3 || (__clang_major__ == 3 && __clang_minor__ < 2)
       #warning "This library requires at least Clang 3.2."
+    #elif defined(__apple_build_version__) && __apple_build_version__ <= 4250028
+      #warning "This library requires at least Clang 3.2.  XCode 4.6's Clang, which claims to be "\
+               "version 4.2 (wat?), is actually built from some random SVN revision between 3.1 "\
+               "and 3.2.  Unfortunately, it is insufficient for compiling this library.  You can "\
+               "download the real Clang 3.2 (or newer) from the Clang web site."
+    #elif __cplusplus >= 201103L && !__has_include(<initializer_list>)
+      #warning "Your compiler supports C++11 but your C++ standard library does not.  If your "\
+               "system has libc++ installed (as should be the case on e.g. Mac OSX), try adding "\
+               "-stdlib=libc++ to your CXXFLAGS."
     #endif
   #else
     #if __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 7)
@@ -50,6 +60,11 @@
   #endif
 #elif defined(_MSC_VER)
   #warning "As of June 2013, Visual Studio's C++11 support was hopelessly behind what is needed to compile this code."
+#else
+  #warning "I don't recognize your compiler.  As of this writing, Clang and GCC are the only "\
+           "known compilers with enough C++11 support for this library.  "\
+           "#define KJ_NO_COMPILER_CHECK to make this warning go away."
+#endif
 #endif
 
 // =======================================================================================
@@ -126,7 +141,7 @@ void inlineRequireFailure(
     if (KJ_LIKELY(condition)); else ::kj::_::inlineRequireFailure( \
         __FILE__, __LINE__, #condition, #__VA_ARGS__, ##__VA_ARGS__)
 // Version of KJ_REQUIRE() which is safe to use in headers that are #included by users.  Used to
-// check preconditions inside inline methods.  KJ_INLINE_DPRECOND is particularly useful in that
+// check preconditions inside inline methods.  KJ_IREQUIRE is particularly useful in that
 // it will be enabled depending on whether the application is compiled in debug mode rather than
 // whether libkj is.
 #endif
