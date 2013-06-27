@@ -4,15 +4,40 @@ ACLOCAL_AMFLAGS = -I m4
 
 AUTOMAKE_OPTIONS = foreign
 
-AM_CXXFLAGS = -I$(srcdir)/src
+# Always include gtest in distributions.
+DIST_SUBDIRS = $(subdirs)
+
+# Build gtest before we build Cap'n Proto tests.  We don't add gtest to SUBDIRS
+# because then "make check" would also build and run all of gtest's own tests,
+# which takes a lot of time and is generally not useful to us.  Also, we don't
+# want "make install" to recurse into gtest since we don't want to overwrite
+# the installed version of gtest if there is one (and, actually, gtest doesn't
+# even support "make install" anyway).  So we define a rule such that it will
+# only be built when needed.
+gtest/lib/libgtest.la:
+	@echo "Making lib/libgtest.a lib/libgtest_main.a in gtest"
+	@cd gtest && $(MAKE) $(AM_MAKEFLAGS) lib/libgtest.la lib/libgtest_main.la
+
+gtest/lib/libgtest_main.la: gtest/lib/libgtest.la
+	@:
+
+# We would like to clean gtest when "make clean" is invoked.  But we have to
+# be careful because clean-local is also invoked during "make distclean", but
+# "make distclean" already recurses into gtest because it's listed among the
+# DIST_SUBDIRS.  distclean will delete gtest/Makefile, so if we then try to
+# cd to the directory again and "make clean" it will fail.  So, check that the
+# Makefile exists before recursing.
+clean-local:
+	@if test -e gtest/Makefile; then \
+	  echo "Making clean in gtest"; \
+	  cd gtest && $(MAKE) $(AM_MAKEFLAGS) clean; \
+	fi
+
+AM_CXXFLAGS = -I$(srcdir)/src -I$(builddir)/src
 
 EXTRA_DIST =                                                                 \
   README.txt                                                                 \
-  INSTALL.txt                                                                \
-  COPYING.txt                                                                \
-  CONTRIBUTORS.txt                                                           \
-  CHANGES.txt                                                                \
-  $(capnpc_inputs)                                                           \
+  LICENSE.txt                                                                \
   $(test_capnpc_inputs)
 
 CLEANFILES = $(capnpc_outputs) $(test_capnpc_outputs) capnpc_middleman test_capnpc_middleman
@@ -40,9 +65,26 @@ MAINTAINERCLEANFILES =   \
 maintainer-clean-local:
 	-rm -rf build-aux
 
-capnpc_inputs =                                                \
+# gmake defines an implicit rule building n from n.o.  Unfortunately, this triggers on our .capnp
+# files because they generate .capnp.c++ which is compiled to .capnp.o.  In addition to being
+# nonsense, this leads to cyclic dependency issues and could even cause the .capnp files to be
+# unexpectedly overwritten!  We need to cancel the implicit rule by declaring an explicit one.
+#
+# I want the hours of my life back that I spent figuring this out.
+%.capnp:
+	@:
+
+# Implicit rules for invoking capnpc.
+%.capnp.h: %.capnp
+	$(CAPNPC) --src-prefix=$(srcdir) -oc++ $^
+%.capnp.c++: %.capnp.h
+	@:
+
+public_capnpc_inputs =                                         \
   src/capnp/c++.capnp                                          \
   src/capnp/schema.capnp
+
+capnpc_inputs = $(public_capnpc_inputs)
 
 capnpc_outputs =                                               \
   src/capnp/c++.capnp.c++                                      \
@@ -50,18 +92,10 @@ capnpc_outputs =                                               \
   src/capnp/schema.capnp.c++                                   \
   src/capnp/schema.capnp.h
 
-# This should depend on $(capnpc_inputs), but then make mysteriously complains
-# about a cyclic dependency.  I don't know where it is coming from.  I rummaged
-# around in the generated Makefile a bit but couldn't figure it out.  I give
-# up.  Automake is terrible.
-capnpc_middleman:
-	$(CAPNPC) -oc++ $(capnpc_inputs)
-	touch capnpc_middleman
-
-$(capnpc_outputs): capnpc_middleman
-
 includecapnpdir = $(includedir)/capnp
 includekjdir = $(includedir)/kj
+
+dist_includecapnp_DATA = $(public_capnpc_inputs)
 
 includekj_HEADERS =                                            \
   src/kj/common.h                                              \
@@ -92,12 +126,10 @@ includecapnp_HEADERS =                                         \
 nodist_includecapnp_HEADERS =                                  \
   src/capnp/schema.capnp.h
 
-# No dynamic library for now since C++ binary compatibility is hard.
-# It may make more sense to have every module statically link Cap'n Proto
-# and pass around messages via memory pointers.
-lib_LIBRARIES = libcapnp.a
+lib_LTLIBRARIES = libcapnp.la
 
-libcapnp_a_SOURCES=                                            \
+libcapnp_la_LDFLAGS = -release $(VERSION) -export-dynamic -no-undefined
+libcapnp_la_SOURCES=                                           \
   src/kj/common.c++                                            \
   src/kj/units.c++                                             \
   src/kj/memory.c++                                            \
@@ -118,8 +150,9 @@ libcapnp_a_SOURCES=                                            \
   src/capnp/stringify.c++                                      \
   src/capnp/serialize.c++                                      \
   src/capnp/serialize-packed.c++
-nodist_libcapnp_a_SOURCES =                                    \
-  src/capnp/schema.capnp.c++
+nodist_libcapnp_la_SOURCES =                                   \
+  src/capnp/schema.capnp.c++                                   \
+  src/capnp/c++.capnp.c++
 
 # Source files intentionally not included in the dist at this time:
 #  src/capnp/serialize-snappy*
@@ -138,20 +171,11 @@ test_capnpc_outputs =                                          \
   src/capnp/test-import.capnp.c++                              \
   src/capnp/test-import.capnp.h
 
-# This should depend on $(test_capnpc_inputs), but then make mysteriously complains
-# about a cyclic dependency.  I don't know where it is coming from.  I rummaged
-# around in the generated Makefile a bit but couldn't figure it out.  I give
-# up.  Automake is terrible.
-test_capnpc_middleman:
-	$(CAPNPC) -oc++ $(test_capnpc_inputs)
-	touch test_capnpc_middleman
-
-$(test_capnpc_outputs): test_capnpc_middleman
-
 BUILT_SOURCES = $(test_capnpc_outputs) $(capnpc_outputs)
 
 check_PROGRAMS = capnp-test
-capnp_test_LDADD = -lgtest -lgtest_main libcapnp.a
+capnp_test_LDADD = gtest/lib/libgtest.la gtest/lib/libgtest_main.la libcapnp.la
+capnp_test_CPPFLAGS = -Igtest/include -I$(srcdir)/gtest/include
 capnp_test_SOURCES =                                           \
   src/kj/common-test.c++                                       \
   src/kj/memory-test.c++                                       \

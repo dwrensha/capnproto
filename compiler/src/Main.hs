@@ -47,12 +47,13 @@ import qualified Data.Map as Map
 import qualified Data.ByteString.Lazy.Char8 as LZ
 import Data.ByteString(unpack, pack, hPut)
 import Data.Word(Word64, Word8)
-import Data.Maybe(fromMaybe, catMaybes)
+import Data.Maybe(fromMaybe, catMaybes, mapMaybe)
 import Data.Function(on)
 import Semantics
 import WireFormat(encodeSchema)
-
 import CxxGenerator(generateCxx)
+import Paths_capnproto_compiler
+import Data.Version(showVersion)
 
 type GeneratorFn = [FileDesc] -> [Word8] -> Map.Map Word64 [Word8] -> IO [(FilePath, LZ.ByteString)]
 
@@ -61,8 +62,10 @@ generatorFns = Map.fromList [ ("c++", generateCxx) ]
 
 data Opt = SearchPathOpt FilePath
          | OutputOpt String GeneratorFn FilePath
+         | SrcPrefixOpt String
          | VerboseOpt
          | HelpOpt
+         | VersionOpt
          | GenIdOpt
 
 main :: IO ()
@@ -70,14 +73,20 @@ main = do
     let optionDescs =
          [ Option "I" ["import-path"] (ReqArg SearchPathOpt "DIR")
              "Search DIR for absolute imports."
+         , Option "" ["src-prefix"] (ReqArg SrcPrefixOpt "PREFIX")
+             "Prefix directory to strip off of source\n\
+             \file names before generating output file\n\
+             \names."
          , Option "o" ["output"] (ReqArg parseOutputArg "LANG[:DIR]")
              ("Generate output for language LANG\n\
               \to directory DIR (default: current\n\
               \directory).  LANG may be any of:\n\
-              \  " ++ unwords (Map.keys generatorFns))
+              \  " ++ unwords (Map.keys generatorFns) ++ "\n\
+              \or a plugin name.")
          , Option "v" ["verbose"] (NoArg VerboseOpt) "Write information about parsed files."
          , Option "i" ["generate-id"] (NoArg GenIdOpt) "Generate a new unique ID."
          , Option "h" ["help"] (NoArg HelpOpt) "Print usage info and exit."
+         , Option "" ["version"] (NoArg VersionOpt) "Print version number and exit."
          ]
     let usage = usageInfo
          "capnpc [OPTION]... [FILE]...\n\
@@ -100,6 +109,11 @@ main = do
         putStr usage
         exitSuccess)
 
+    let isVersion = not $ null [opt | opt@VersionOpt <- options]
+    when isVersion (do
+        putStr ("Cap'n Proto Compiler " ++ showVersion Paths_capnproto_compiler.version ++ "\n")
+        exitSuccess)
+
     let isGenId = not $ null [opt | opt@GenIdOpt <- options]
     when isGenId (do
         i <- generateId
@@ -108,7 +122,17 @@ main = do
 
     let isVerbose = not $ null [opt | opt@VerboseOpt <- options]
     let outputs = [(fn, dir) | OutputOpt _ fn dir <- options]
-    let searchPath = [dir | SearchPathOpt dir <- options]
+
+    -- TODO(someday):  We should perhaps determine the compiler binary's location and search its
+    --   ../include as well.  Also, there should perhaps be a way to tell the compiler not to search
+    --   these hard-coded default paths.
+    let searchPath = ["/usr/local/include", "/usr/include"] ++
+                     [dir | SearchPathOpt dir <- options]
+        srcPrefixes = [addTrailingSlash prefix | SrcPrefixOpt prefix <- options]
+        addTrailingSlash path =
+            if not (null path) && last path /= '/'
+                then path ++ "/"
+                else path
 
     let verifyDirectoryExists dir = do
         exists <- doesDirectoryExist dir
@@ -135,10 +159,10 @@ main = do
         hPutStr stderr
             "IDs (16-digit hex strings prefixed with @0x) must be unique.  Sorry I'm not\n\
             \able to be more specific about where the duplicates were seen, but it should\n\
-            \be easy enough to grep, right?"
+            \be easy enough to grep, right?\n"
         exitFailure)
 
-    mapM_ (doOutput requestedFiles schema schemaMap) outputs
+    mapM_ (doOutput requestedFiles srcPrefixes schema schemaMap) outputs
 
     when failed exitFailure
 
@@ -285,12 +309,17 @@ handleFile isVerbose searchPath filename = do
     result <- importFile isVerbose searchPath filename
 
     case result of
-        Right _ -> return Nothing
+        Right e -> do
+            liftIO $ hPutStr stderr (e ++ "\n")
+            return Nothing
         Left desc -> return $ Just desc
 
-doOutput requestedFiles schema schemaMap output = do
+doOutput requestedFiles srcPrefixes schema schemaMap output = do
     let write dir (name, content) = do
-            let outFilename = dir ++ "/" ++ name
+            let strippedOptions = mapMaybe (flip List.stripPrefix name) srcPrefixes
+                stripped = if null strippedOptions then name else
+                    List.minimumBy (compare `on` length) strippedOptions
+                outFilename = dir ++ "/" ++ stripped
             createDirectoryIfMissing True $ takeDirectory outFilename
             LZ.writeFile outFilename content
         generate (generatorFn, dir) = do
