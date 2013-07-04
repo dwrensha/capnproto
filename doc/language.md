@@ -1,8 +1,9 @@
 ---
 layout: page
+title: Schema Language
 ---
 
-# Defining Types
+# Schema Language
 
 Like Protocol Buffers and Thrift (but unlike JSON or MessagePack), Cap'n Proto messages are
 strongly-typed and not self-describing. You must define your message structure in a special
@@ -360,8 +361,8 @@ const myConst :Int32 = 123 $baz(11);
 annotation qux(struct, field) :Void;
 
 struct MyStruct $qux {
-  string $0 :Text $qux;
-  number $1 :Int32 $qux;
+  string @0 :Text $qux;
+  number @1 :Int32 $qux;
 }
 
 annotation corge(file) :MyStruct;

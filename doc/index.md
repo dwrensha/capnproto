@@ -1,5 +1,6 @@
 ---
 layout: page
+title: Introduction
 ---
 
 # Introduction
@@ -78,19 +79,10 @@ I no longer work for Google. Cap'n Proto is not affiliated with Google or any ot
 
 **_OK, how do I get started?_**
 
-At this time, Cap'n Proto is not ready for production use.  Feel free to
-[play around with the code and run the benchmarks](install.html), but note that it's incomplete
-and buggy.  If you'd like to help hack on Cap'n Proto, such as by writing bindings in other
-languages, let us know on the [discussion group](https://groups.google.com/group/capnproto).  If
-you'd just like to know when it's ready, add yourself to the
+To install Cap'n Proto, head over to the [installation page](install.html).  If you'd like to help
+hack on Cap'n Proto, such as by writing bindings in other languages, let us know on the
+[discussion group](https://groups.google.com/group/capnproto).  If you'd like to receive e-mail
+udpates about future releases, add yourself to the
 [announcement list](https://groups.google.com/group/capnproto-announce).
 
-<div style="float: right">
-<a class="github_link" style="color: #fff"
-href="https://github.com/kentonv/capnproto">Develop</a>
-<a class="groups_link" style="color: #fff"
-href="https://groups.google.com/group/capnproto">Discuss</a>
-<a class="groups_link" style="color: #fff"
-href="https://groups.google.com/group/capnproto-announce">Stay Updated</a>
-</div>
-<div style="clear: right;"> </div>
+{% include buttons.html %}

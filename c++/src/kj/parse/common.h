@@ -35,14 +35,14 @@
 // will have updated the input cursor to point to the position just past the end of what was parsed.
 // On failure, the cursor position is unspecified.
 
-#ifndef KJ_PARSER_H_
-#define KJ_PARSER_H_
+#ifndef KJ_PARSE_COMMON_H_
+#define KJ_PARSE_COMMON_H_
 
-#include "common.h"
-#include "memory.h"
-#include "array.h"
-#include "tuple.h"
-#include "vector.h"
+#include "../common.h"
+#include "../memory.h"
+#include "../array.h"
+#include "../tuple.h"
+#include "../vector.h"
 
 namespace kj {
 namespace parse {
@@ -52,8 +52,6 @@ class IteratorInput {
   // A parser input implementation based on an iterator range.
 
 public:
-  typedef Element ElementType;
-
   IteratorInput(Iterator begin, Iterator end)
       : parent(nullptr), pos(begin), end(end), best(begin) {}
   IteratorInput(IteratorInput& parent)
@@ -63,9 +61,13 @@ public:
       parent->best = kj::max(kj::max(pos, best), parent->best);
     }
   }
+  KJ_DISALLOW_COPY(IteratorInput);
 
   void advanceParent() {
     parent->pos = pos;
+  }
+  void forgetParent() {
+    parent = nullptr;
   }
 
   bool atEnd() { return pos == end; }
@@ -74,7 +76,7 @@ public:
     return *pos;
   }
   const Element& consume() {
-    assert(!atEnd());
+    KJ_IREQUIRE(!atEnd());
     return *pos++;
   }
   void next() {
@@ -91,10 +93,6 @@ private:
   Iterator pos;
   Iterator end;
   Iterator best;  // furthest we got with any sub-input
-
-  IteratorInput(IteratorInput&&) = delete;
-  IteratorInput& operator=(const IteratorInput&) = delete;
-  IteratorInput& operator=(IteratorInput&&) = delete;
 };
 
 template <typename T> struct OutputType_;
@@ -156,6 +154,25 @@ constexpr ParserRef<Input, OutputType<ParserImpl, Input>> ref(ParserImpl& impl) 
 }
 
 // -------------------------------------------------------------------
+// any
+// Output = one token
+
+class Any_ {
+public:
+  template <typename Input>
+  Maybe<Decay<decltype(instance<Input>().consume())>> operator()(Input& input) const {
+    if (input.atEnd()) {
+      return nullptr;
+    } else {
+      return input.consume();
+    }
+  }
+};
+
+constexpr Any_ any = Any_();
+// A parser which matches any token and simply returns it.
+
+// -------------------------------------------------------------------
 // exactly()
 // Output = Tuple<>
 
@@ -215,11 +232,6 @@ constexpr ExactlyConst_<T, expected> exactlyConst() {
   return ExactlyConst_<T, expected>();
 }
 
-template <char c>
-constexpr ExactlyConst_<char, c> exactChar() {
-  return ExactlyConst_<char, c>();
-}
-
 // -------------------------------------------------------------------
 // constResult()
 
@@ -248,6 +260,12 @@ constexpr ConstResult_<SubParser, Result> constResult(SubParser&& subParser, Res
   // Constructs a parser which returns exactly `result` if `subParser` is successful.
 
   return ConstResult_<SubParser, Result>(kj::fwd<SubParser>(subParser), kj::fwd<Result>(result));
+}
+
+template <typename SubParser>
+constexpr ConstResult_<SubParser, Tuple<>> discard(SubParser&& subParser) {
+  // Constructs a parser which wraps `subParser` but discards the result.
+  return constResult(kj::fwd<SubParser>(subParser), Tuple<>());
 }
 
 // -------------------------------------------------------------------
@@ -315,16 +333,28 @@ constexpr Sequence_<SubParsers...> sequence(SubParsers&&... subParsers) {
 
 // -------------------------------------------------------------------
 // many()
-// Output = Array of output of sub-parser.
+// Output = Array of output of sub-parser, or just a uint count if the sub-parser returns Tuple<>.
 
 template <typename SubParser, bool atLeastOne>
 class Many_ {
+  template <typename Input, typename Output = OutputType<SubParser, Input>>
+  struct Impl;
 public:
   explicit constexpr Many_(SubParser&& subParser)
       : subParser(kj::mv(subParser)) {}
 
   template <typename Input>
-  Maybe<Array<OutputType<SubParser, Input>>> operator()(Input& input) const {
+  auto operator()(Input& input) const
+      -> decltype(Impl<Input>::apply(instance<const SubParser&>(), input));
+
+private:
+  SubParser subParser;
+};
+
+template <typename SubParser, bool atLeastOne>
+template <typename Input, typename Output>
+struct Many_<SubParser, atLeastOne>::Impl {
+  static Maybe<Array<Output>> apply(const SubParser& subParser, Input& input) {
     typedef Vector<OutputType<SubParser, Input>> Results;
     Results results;
 
@@ -345,15 +375,44 @@ public:
 
     return results.releaseAsArray();
   }
-
-private:
-  SubParser subParser;
 };
+
+template <typename SubParser, bool atLeastOne>
+template <typename Input>
+struct Many_<SubParser, atLeastOne>::Impl<Input, Tuple<>> {
+  static Maybe<uint> apply(const SubParser& subParser, Input& input) {
+    uint count = 0;
+
+    while (!input.atEnd()) {
+      Input subInput(input);
+
+      KJ_IF_MAYBE(subResult, subParser(subInput)) {
+        subInput.advanceParent();
+        ++count;
+      } else {
+        break;
+      }
+    }
+
+    if (atLeastOne && count == 0) {
+      return nullptr;
+    }
+
+    return count;
+  }
+};
+
+template <typename SubParser, bool atLeastOne>
+template <typename Input>
+auto Many_<SubParser, atLeastOne>::operator()(Input& input) const
+    -> decltype(Impl<Input>::apply(instance<const SubParser&>(), input)) {
+  return Impl<Input, OutputType<SubParser, Input>>::apply(subParser, input);
+}
 
 template <typename SubParser>
 constexpr Many_<SubParser, false> many(SubParser&& subParser) {
   // Constructs a parser that repeatedly executes the given parser until it fails, returning an
-  // Array of the results.
+  // Array of the results (or a uint count if `subParser` returns an empty tuple).
   return Many_<SubParser, false>(kj::fwd<SubParser>(subParser));
 }
 
@@ -482,6 +541,28 @@ public:
 
   template <typename Input>
   Maybe<decltype(kj::apply(instance<TransformFunc&>(),
+                           instance<OutputType<SubParser, Input>&&>()))>
+      operator()(Input& input) const {
+    KJ_IF_MAYBE(subResult, subParser(input)) {
+      return kj::apply(transform, kj::mv(*subResult));
+    } else {
+      return nullptr;
+    }
+  }
+
+private:
+  SubParser subParser;
+  TransformFunc transform;
+};
+
+template <typename SubParser, typename TransformFunc>
+class TransformWithLocation_ {
+public:
+  explicit constexpr TransformWithLocation_(SubParser&& subParser, TransformFunc&& transform)
+      : subParser(kj::fwd<SubParser>(subParser)), transform(kj::fwd<TransformFunc>(transform)) {}
+
+  template <typename Input>
+  Maybe<decltype(kj::apply(instance<TransformFunc&>(),
                            instance<Span<Decay<decltype(instance<Input&>().getPosition())>>>(),
                            instance<OutputType<SubParser, Input>&&>()))>
       operator()(Input& input) const {
@@ -506,6 +587,16 @@ constexpr Transform_<SubParser, TransformFunc> transform(
   // `functor` on it.  Typically `functor` is a lambda.  It is invoked using `kj::apply`,
   // meaning tuples will be unpacked as arguments.
   return Transform_<SubParser, TransformFunc>(
+      kj::fwd<SubParser>(subParser), kj::fwd<TransformFunc>(functor));
+}
+
+template <typename SubParser, typename TransformFunc>
+constexpr TransformWithLocation_<SubParser, TransformFunc> transformWithLocation(
+    SubParser&& subParser, TransformFunc&& functor) {
+  // Constructs a parser which executes some other parser and then transforms the result by invoking
+  // `functor` on it.  Typically `functor` is a lambda.  It is invoked using `kj::apply`,
+  // meaning tuples will be unpacked as arguments.
+  return TransformWithLocation_<SubParser, TransformFunc>(
       kj::fwd<SubParser>(subParser), kj::fwd<TransformFunc>(functor));
 }
 
@@ -548,6 +639,37 @@ constexpr AcceptIf_<SubParser, Condition> acceptIf(SubParser&& subParser, Condit
 }
 
 // -------------------------------------------------------------------
+// notLookingAt()
+// Fails if the given parser succeeds at the current location.
+
+template <typename SubParser>
+class NotLookingAt_ {
+public:
+  explicit constexpr NotLookingAt_(SubParser&& subParser): subParser(kj::mv(subParser)) {}
+
+  template <typename Input>
+  Maybe<Tuple<>> operator()(Input& input) const {
+    Input subInput(input);
+    subInput.forgetParent();
+    if (subParser(subInput) == nullptr) {
+      return Tuple<>();
+    } else {
+      return nullptr;
+    }
+  }
+
+private:
+  SubParser subParser;
+};
+
+template <typename SubParser>
+constexpr NotLookingAt_<SubParser> notLookingAt(SubParser&& subParser) {
+  // Constructs a parser which fails at any position where the given parser succeeds.  Otherwise,
+  // it succeeds without consuming any input and returns an empty tuple.
+  return NotLookingAt_<SubParser>(kj::fwd<SubParser>(subParser));
+}
+
+// -------------------------------------------------------------------
 // endOfInput()
 // Output = Tuple<>, only succeeds if at end-of-input
 
@@ -563,73 +685,10 @@ public:
   }
 };
 
-constexpr EndOfInput_ endOfInput() {
-  // Constructs a parser that succeeds only if it is called with no input.
-  return EndOfInput_();
-}
-
-// -------------------------------------------------------------------
-// CharGroup
-
-class CharGroup_ {
-public:
-  constexpr CharGroup_(): bits{0, 0, 0, 0} {}
-
-  constexpr CharGroup_ orRange(unsigned char first, unsigned char last) const {
-    return CharGroup_(bits[0] | (oneBits(last +   1) & ~oneBits(first      )),
-                      bits[1] | (oneBits(last -  63) & ~oneBits(first -  64)),
-                      bits[2] | (oneBits(last - 127) & ~oneBits(first - 128)),
-                      bits[3] | (oneBits(last - 191) & ~oneBits(first - 192)));
-  }
-
-  constexpr CharGroup_ orAny(const char* chars) const {
-    return *chars == 0 ? *this : orChar(*chars).orAny(chars + 1);
-  }
-
-  constexpr CharGroup_ orChar(unsigned char c) const {
-    return CharGroup_(bits[0] | bit(c),
-                      bits[1] | bit(c - 64),
-                      bits[2] | bit(c - 128),
-                      bits[3] | bit(c - 256));
-  }
-
-  constexpr CharGroup_ invert() const {
-    return CharGroup_(~bits[0], ~bits[1], ~bits[2], ~bits[3]);
-  }
-
-  template <typename Input>
-  Maybe<char> operator()(Input& input) const {
-    unsigned char c = input.current();
-    if ((bits[c / 64] & (1ll << (c % 64))) != 0) {
-      input.next();
-      return c;
-    } else {
-      return nullptr;
-    }
-  }
-
-private:
-  typedef unsigned long long Bits64;
-
-  constexpr CharGroup_(Bits64 a, Bits64 b, Bits64 c, Bits64 d): bits{a, b, c, d} {}
-  Bits64 bits[4];
-
-  static constexpr Bits64 oneBits(int count) {
-    return count <= 0 ? 0ll : count >= 64 ? -1ll : ((1ll << count) - 1);
-  }
-  static constexpr Bits64 bit(int index) {
-    return index < 0 ? 0 : index >= 64 ? 0 : (1ll << index);
-  }
-};
-
-constexpr CharGroup_ charRange(char first, char last) {
-  return CharGroup_().orRange(first, last);
-}
-constexpr CharGroup_ anyChar(const char* chars) {
-  return CharGroup_().orAny(chars);
-}
+constexpr EndOfInput_ endOfInput = EndOfInput_();
+// A parser that succeeds only if it is called with no input.
 
 }  // namespace parse
 }  // namespace kj
 
-#endif  // KJ_PARSER_H_
+#endif  // KJ_PARSE_COMMON_H_
