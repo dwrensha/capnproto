@@ -227,6 +227,77 @@ TEST(CommonParsers, ManyParserCountOnly) {
   }
 }
 
+TEST(CommonParsers, TimesParser) {
+  StringPtr text = "foobar";
+
+  auto parser = sequence(exactly('f'), times(any, 4));
+
+  {
+    Input input(text.begin(), text.begin() + 4);
+    Maybe<Array<char>> result = parser(input);
+    EXPECT_TRUE(result == nullptr);
+    EXPECT_TRUE(input.atEnd());
+  }
+
+  {
+    Input input(text.begin(), text.begin() + 5);
+    Maybe<Array<char>> result = parser(input);
+    KJ_IF_MAYBE(s, result) {
+      EXPECT_EQ("ooba", heapString(*s));
+    } else {
+      ADD_FAILURE() << "Expected string, got null.";
+    }
+    EXPECT_TRUE(input.atEnd());
+  }
+
+  {
+    Input input(text.begin(), text.end());
+    Maybe<Array<char>> result = parser(input);
+    KJ_IF_MAYBE(s, result) {
+      EXPECT_EQ("ooba", heapString(*s));
+    } else {
+      ADD_FAILURE() << "Expected string, got null.";
+    }
+    EXPECT_FALSE(input.atEnd());
+  }
+}
+
+TEST(CommonParsers, TimesParserCountOnly) {
+  StringPtr text = "foooob";
+
+  auto parser = sequence(exactly('f'), times(exactly('o'), 4));
+
+  {
+    Input input(text.begin(), text.begin() + 4);
+    Maybe<Tuple<>> result = parser(input);
+    EXPECT_TRUE(result == nullptr);
+    EXPECT_TRUE(input.atEnd());
+  }
+
+  {
+    Input input(text.begin(), text.begin() + 5);
+    Maybe<Tuple<>> result = parser(input);
+    EXPECT_TRUE(result != nullptr);
+    EXPECT_TRUE(input.atEnd());
+  }
+
+  {
+    Input input(text.begin(), text.end());
+    Maybe<Tuple<>> result = parser(input);
+    EXPECT_TRUE(result != nullptr);
+    EXPECT_FALSE(input.atEnd());
+  }
+
+  text = "fooob";
+
+  {
+    Input input(text.begin(), text.end());
+    Maybe<Tuple<>> result = parser(input);
+    EXPECT_TRUE(result == nullptr);
+    EXPECT_FALSE(input.atEnd());
+  }
+}
+
 TEST(CommonParsers, ManyParserSubResult) {
   StringPtr text = "foooob";
 
@@ -340,6 +411,37 @@ TEST(CommonParsers, TransformParser) {
     } else {
       ADD_FAILURE() << "Expected 123, got null.";
     }
+    EXPECT_TRUE(input.atEnd());
+  }
+}
+
+TEST(CommonParsers, TransformOrRejectParser) {
+  auto parser = transformOrReject(many(any),
+      [](Array<char> chars) -> Maybe<int> {
+        if (heapString(chars) == "foo") {
+          return 123;
+        } else {
+          return nullptr;
+        }
+      });
+
+  {
+    StringPtr text = "foo";
+    Input input(text.begin(), text.end());
+    Maybe<int> result = parser(input);
+    KJ_IF_MAYBE(i, result) {
+      EXPECT_EQ(123, *i);
+    } else {
+      ADD_FAILURE() << "Expected 123, got null.";
+    }
+    EXPECT_TRUE(input.atEnd());
+  }
+
+  {
+    StringPtr text = "bar";
+    Input input(text.begin(), text.end());
+    Maybe<int> result = parser(input);
+    EXPECT_TRUE(result == nullptr);
     EXPECT_TRUE(input.atEnd());
   }
 }

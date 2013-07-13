@@ -104,7 +104,7 @@ public:
     KJ_IREQUIRE(value[size] == '\0', "StringPtr must be NUL-terminated.");
   }
 
-  inline Reader asReader() const { return Reader(content.begin(), content.size()); }
+  inline Reader asReader() const { return Reader(content.begin(), content.size() - 1); }
 
   inline operator kj::ArrayPtr<char>();
   inline kj::ArrayPtr<char> asArray();
@@ -122,6 +122,7 @@ public:
   // Result does not include NUL terminator.
 
   inline char operator[](size_t index) const { return content[index]; }
+  inline char& operator[](size_t index) { return content[index]; }
 
   inline char* begin() { return content.begin(); }
   inline char* end() { return content.end() - 1; }

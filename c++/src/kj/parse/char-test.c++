@@ -32,6 +32,44 @@ namespace {
 typedef IteratorInput<char, const char*> Input;
 typedef Span<const char*> TestLocation;
 
+TEST(CharParsers, ExactChar) {
+  constexpr auto parser = exactChar<'a'>();
+
+  {
+    StringPtr text = "a";
+    Input input(text.begin(), text.end());
+    EXPECT_TRUE(parser(input) != nullptr);
+    EXPECT_TRUE(input.atEnd());
+  }
+
+  {
+    StringPtr text = "b";
+    Input input(text.begin(), text.end());
+    EXPECT_TRUE(parser(input) == nullptr);
+    EXPECT_FALSE(input.atEnd());
+  }
+}
+
+TEST(CharParsers, ExactString) {
+  constexpr auto parser = exactString("foo");
+
+  {
+    StringPtr text = "foobar";
+    Input input(text.begin(), text.end());
+    EXPECT_TRUE(parser(input) != nullptr);
+    ASSERT_FALSE(input.atEnd());
+    EXPECT_EQ('b', input.current());
+  }
+
+  {
+    StringPtr text = "bar";
+    Input input(text.begin(), text.end());
+    EXPECT_TRUE(parser(input) == nullptr);
+    EXPECT_FALSE(input.atEnd());
+    EXPECT_EQ('b', input.current());
+  }
+}
+
 TEST(CharParsers, CharRange) {
   constexpr auto parser = charRange('a', 'z');
 
@@ -177,24 +215,6 @@ TEST(CharParsers, CharGroupCombo) {
   }
 }
 
-TEST(CharParsers, ExactChar) {
-  constexpr auto parser = exactChar<'a'>();
-
-  {
-    StringPtr text = "a";
-    Input input(text.begin(), text.end());
-    EXPECT_TRUE(parser(input) != nullptr);
-    EXPECT_TRUE(input.atEnd());
-  }
-
-  {
-    StringPtr text = "b";
-    Input input(text.begin(), text.end());
-    EXPECT_TRUE(parser(input) == nullptr);
-    EXPECT_FALSE(input.atEnd());
-  }
-}
-
 TEST(CharParsers, Identifier) {
   constexpr auto parser = identifier;
 
@@ -331,11 +351,11 @@ TEST(CharParsers, DoubleQuotedString) {
   }
 
   {
-    StringPtr text = "\"test\\a\\b\\f\\n\\r\\t\\v\\\'\\\"\\\?\x01\2\34\156\"";
+    StringPtr text = "\"test\\a\\b\\f\\n\\r\\t\\v\\\'\\\"\\\?\\x01\\x20\\2\\34\\156\"";
     Input input(text.begin(), text.end());
     Maybe<String> result = parser(input);
     KJ_IF_MAYBE(value, result) {
-      EXPECT_EQ("test\a\b\f\n\r\t\v\'\"\?\x01\2\34\156", *value);
+      EXPECT_EQ("test\a\b\f\n\r\t\v\'\"\?\x01\x20\2\34\156", *value);
     } else {
       ADD_FAILURE() << "Expected string, got null.";
     }

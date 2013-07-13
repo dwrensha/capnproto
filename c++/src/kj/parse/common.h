@@ -54,7 +54,7 @@ class IteratorInput {
 public:
   IteratorInput(Iterator begin, Iterator end)
       : parent(nullptr), pos(begin), end(end), best(begin) {}
-  IteratorInput(IteratorInput& parent)
+  explicit IteratorInput(IteratorInput& parent)
       : parent(&parent), pos(parent.pos), end(parent.end), best(parent.pos) {}
   ~IteratorInput() {
     if (parent != nullptr) {
@@ -71,11 +71,11 @@ public:
   }
 
   bool atEnd() { return pos == end; }
-  const Element& current() {
+  auto current() -> decltype(*instance<Iterator>()) {
     KJ_IREQUIRE(!atEnd());
     return *pos;
   }
-  const Element& consume() {
+  auto consume() -> decltype(*instance<Iterator>()) {
     KJ_IREQUIRE(!atEnd());
     return *pos++;
   }
@@ -111,14 +111,30 @@ class ParserRef {
   // from becoming ridiculous.  Using too many of them can hurt performance, though.
 
 public:
+  ParserRef(): parser(nullptr), wrapper(nullptr) {}
+  ParserRef(const ParserRef&) = default;
+  ParserRef(ParserRef&&) = default;
+  ParserRef& operator=(const ParserRef& other) = default;
+  ParserRef& operator=(ParserRef&& other) = default;
+
   template <typename Other>
-  constexpr ParserRef(Other& other)
-      : parser(&other), wrapper(WrapperImplInstance<Other>::instance) {}
+  constexpr ParserRef(Other&& other)
+      : parser(&other), wrapper(&WrapperImplInstance<Decay<Other>>::instance) {
+    static_assert(kj::isReference<Other>(), "ParseRef should not be assigned to a temporary.");
+  }
+
+  template <typename Other>
+  inline ParserRef& operator=(Other&& other) {
+    static_assert(kj::isReference<Other>(), "ParseRef should not be assigned to a temporary.");
+    parser = &other;
+    wrapper = &WrapperImplInstance<Decay<Other>>::instance;
+    return *this;
+  }
 
   KJ_ALWAYS_INLINE(Maybe<Output> operator()(Input& input) const) {
     // Always inline in the hopes that this allows branch prediction to kick in so the virtual call
     // doesn't hurt so much.
-    return wrapper.parse(parser, input);
+    return wrapper->parse(parser, input);
   }
 
 private:
@@ -137,7 +153,7 @@ private:
   };
 
   const void* parser;
-  const Wrapper& wrapper;
+  const Wrapper* wrapper;
 };
 
 template <typename Input, typename Output>
@@ -258,7 +274,6 @@ private:
 template <typename SubParser, typename Result>
 constexpr ConstResult_<SubParser, Result> constResult(SubParser&& subParser, Result&& result) {
   // Constructs a parser which returns exactly `result` if `subParser` is successful.
-
   return ConstResult_<SubParser, Result>(kj::fwd<SubParser>(subParser), kj::fwd<Result>(result));
 }
 
@@ -341,7 +356,7 @@ class Many_ {
   struct Impl;
 public:
   explicit constexpr Many_(SubParser&& subParser)
-      : subParser(kj::mv(subParser)) {}
+      : subParser(kj::fwd<SubParser>(subParser)) {}
 
   template <typename Input>
   auto operator()(Input& input) const
@@ -380,6 +395,8 @@ struct Many_<SubParser, atLeastOne>::Impl {
 template <typename SubParser, bool atLeastOne>
 template <typename Input>
 struct Many_<SubParser, atLeastOne>::Impl<Input, Tuple<>> {
+  // If the sub-parser output is Tuple<>, just return a count.
+
   static Maybe<uint> apply(const SubParser& subParser, Input& input) {
     uint count = 0;
 
@@ -423,6 +440,82 @@ constexpr Many_<SubParser, true> oneOrMore(SubParser&& subParser) {
 }
 
 // -------------------------------------------------------------------
+// times()
+// Output = Array of output of sub-parser, or Tuple<> if sub-parser returns Tuple<>.
+
+template <typename SubParser>
+class Times_ {
+  template <typename Input, typename Output = OutputType<SubParser, Input>>
+  struct Impl;
+public:
+  explicit constexpr Times_(SubParser&& subParser, uint count)
+      : subParser(kj::fwd<SubParser>(subParser)), count(count) {}
+
+  template <typename Input>
+  auto operator()(Input& input) const
+      -> decltype(Impl<Input>::apply(instance<const SubParser&>(), instance<uint>(), input));
+
+private:
+  SubParser subParser;
+  uint count;
+};
+
+template <typename SubParser>
+template <typename Input, typename Output>
+struct Times_<SubParser>::Impl {
+  static Maybe<Array<Output>> apply(const SubParser& subParser, uint count, Input& input) {
+    auto results = heapArrayBuilder<OutputType<SubParser, Input>>(count);
+
+    while (results.size() < count) {
+      if (input.atEnd()) {
+        return nullptr;
+      } else KJ_IF_MAYBE(subResult, subParser(input)) {
+        results.add(kj::mv(*subResult));
+      } else {
+        return nullptr;
+      }
+    }
+
+    return results.finish();
+  }
+};
+
+template <typename SubParser>
+template <typename Input>
+struct Times_<SubParser>::Impl<Input, Tuple<>> {
+  // If the sub-parser output is Tuple<>, just return a count.
+
+  static Maybe<Tuple<>> apply(const SubParser& subParser, uint count, Input& input) {
+    uint actualCount = 0;
+
+    while (actualCount < count) {
+      if (input.atEnd()) {
+        return nullptr;
+      } else KJ_IF_MAYBE(subResult, subParser(input)) {
+        ++actualCount;
+      } else {
+        return nullptr;
+      }
+    }
+
+    return tuple();
+  }
+};
+
+template <typename SubParser>
+template <typename Input>
+auto Times_<SubParser>::operator()(Input& input) const
+    -> decltype(Impl<Input>::apply(instance<const SubParser&>(), instance<uint>(), input)) {
+  return Impl<Input, OutputType<SubParser, Input>>::apply(subParser, count, input);
+}
+
+template <typename SubParser>
+constexpr Times_<SubParser> times(SubParser&& subParser, uint count) {
+  // Constructs a parser that repeats the subParser exactly `count` times.
+  return Times_<SubParser>(kj::fwd<SubParser>(subParser), count);
+}
+
+// -------------------------------------------------------------------
 // optional()
 // Output = Maybe<output of sub-parser>
 
@@ -430,7 +523,7 @@ template <typename SubParser>
 class Optional_ {
 public:
   explicit constexpr Optional_(SubParser&& subParser)
-      : subParser(kj::mv(subParser)) {}
+      : subParser(kj::fwd<SubParser>(subParser)) {}
 
   template <typename Input>
   Maybe<Maybe<OutputType<SubParser, Input>>> operator()(Input& input) const {
@@ -467,9 +560,8 @@ class OneOf_;
 template <typename FirstSubParser, typename... SubParsers>
 class OneOf_<FirstSubParser, SubParsers...> {
 public:
-  template <typename T, typename... U>
-  explicit constexpr OneOf_(T&& firstSubParser, U&&... rest)
-      : first(kj::fwd<T>(firstSubParser)), rest(kj::fwd<U>(rest)...) {}
+  explicit constexpr OneOf_(FirstSubParser&& firstSubParser, SubParsers&&... rest)
+      : first(kj::fwd<FirstSubParser>(firstSubParser)), rest(kj::fwd<SubParsers>(rest)...) {}
 
   template <typename Input>
   Maybe<OutputType<FirstSubParser, Input>> operator()(Input& input) const {
@@ -517,8 +609,8 @@ constexpr OneOf_<SubParsers...> oneOf(SubParsers&&... parsers) {
 template <typename Position>
 struct Span {
 public:
-  inline const Position& begin() { return begin_; }
-  inline const Position& end() { return end_; }
+  inline const Position& begin() const { return begin_; }
+  inline const Position& end() const { return end_; }
 
   Span() = default;
   inline constexpr Span(Position&& begin, Position&& end): begin_(mv(begin)), end_(mv(end)) {}
@@ -542,6 +634,27 @@ public:
   template <typename Input>
   Maybe<decltype(kj::apply(instance<TransformFunc&>(),
                            instance<OutputType<SubParser, Input>&&>()))>
+      operator()(Input& input) const {
+    KJ_IF_MAYBE(subResult, subParser(input)) {
+      return kj::apply(transform, kj::mv(*subResult));
+    } else {
+      return nullptr;
+    }
+  }
+
+private:
+  SubParser subParser;
+  TransformFunc transform;
+};
+
+template <typename SubParser, typename TransformFunc>
+class TransformOrReject_ {
+public:
+  explicit constexpr TransformOrReject_(SubParser&& subParser, TransformFunc&& transform)
+      : subParser(kj::fwd<SubParser>(subParser)), transform(kj::fwd<TransformFunc>(transform)) {}
+
+  template <typename Input>
+  decltype(kj::apply(instance<TransformFunc&>(), instance<OutputType<SubParser, Input>&&>()))
       operator()(Input& input) const {
     KJ_IF_MAYBE(subResult, subParser(input)) {
       return kj::apply(transform, kj::mv(*subResult));
@@ -591,11 +704,20 @@ constexpr Transform_<SubParser, TransformFunc> transform(
 }
 
 template <typename SubParser, typename TransformFunc>
+constexpr TransformOrReject_<SubParser, TransformFunc> transformOrReject(
+    SubParser&& subParser, TransformFunc&& functor) {
+  // Like `transform()` except that `functor` returns a `Maybe`.  If it returns null, parsing fails,
+  // otherwise the parser's result is the content of the `Maybe`.
+  return TransformOrReject_<SubParser, TransformFunc>(
+      kj::fwd<SubParser>(subParser), kj::fwd<TransformFunc>(functor));
+}
+
+template <typename SubParser, typename TransformFunc>
 constexpr TransformWithLocation_<SubParser, TransformFunc> transformWithLocation(
     SubParser&& subParser, TransformFunc&& functor) {
-  // Constructs a parser which executes some other parser and then transforms the result by invoking
-  // `functor` on it.  Typically `functor` is a lambda.  It is invoked using `kj::apply`,
-  // meaning tuples will be unpacked as arguments.
+  // Like `transform` except that `functor` also takes a `Span` as its first parameter specifying
+  // the location of the parsed content.  The span's position type is whatever the parser input's
+  // getPosition() returns.
   return TransformWithLocation_<SubParser, TransformFunc>(
       kj::fwd<SubParser>(subParser), kj::fwd<TransformFunc>(functor));
 }
@@ -608,7 +730,7 @@ template <typename SubParser, typename Condition>
 class AcceptIf_ {
 public:
   explicit constexpr AcceptIf_(SubParser&& subParser, Condition&& condition)
-      : subParser(kj::mv(subParser)), condition(kj::mv(condition)) {}
+      : subParser(kj::fwd<SubParser>(subParser)), condition(kj::fwd<Condition>(condition)) {}
 
   template <typename Input>
   Maybe<OutputType<SubParser, Input>> operator()(Input& input) const {
@@ -634,6 +756,8 @@ constexpr AcceptIf_<SubParser, Condition> acceptIf(SubParser&& subParser, Condit
   // `condition` on the result to check if it is valid.  Typically, `condition` is a lambda
   // returning true or false.  Like with `transform()`, `condition` is invoked using `kj::apply`
   // to unpack tuples.
+  //
+  // TODO(soon):  Remove in favor of transformOrReject()?
   return AcceptIf_<SubParser, Condition>(
       kj::fwd<SubParser>(subParser), kj::fwd<Condition>(condition));
 }
@@ -645,7 +769,8 @@ constexpr AcceptIf_<SubParser, Condition> acceptIf(SubParser&& subParser, Condit
 template <typename SubParser>
 class NotLookingAt_ {
 public:
-  explicit constexpr NotLookingAt_(SubParser&& subParser): subParser(kj::mv(subParser)) {}
+  explicit constexpr NotLookingAt_(SubParser&& subParser)
+      : subParser(kj::fwd<SubParser>(subParser)) {}
 
   template <typename Input>
   Maybe<Tuple<>> operator()(Input& input) const {
