@@ -261,6 +261,10 @@ struct DisallowConstCopyIfNotConst: public DisallowConstCopy {
 template <typename T>
 struct DisallowConstCopyIfNotConst<const T> {};
 
+template <typename T> struct IsConst_ { static constexpr bool value = false; };
+template <typename T> struct IsConst_<const T> { static constexpr bool value = true; };
+template <typename T> constexpr bool isConst() { return IsConst_<T>::value; }
+
 template <typename T> struct EnableIfNotConst_ { typedef T Type; };
 template <typename T> struct EnableIfNotConst_<const T>;
 template <typename T> using EnableIfNotConst = typename EnableIfNotConst_<T>::Type;
@@ -269,9 +273,9 @@ template <typename T> struct EnableIfConst_;
 template <typename T> struct EnableIfConst_<const T> { typedef T Type; };
 template <typename T> using EnableIfConst = typename EnableIfConst_<T>::Type;
 
-template <typename T> struct RemoveConstOrBogus_ { struct Type; };
-template <typename T> struct RemoveConstOrBogus_<const T> { typedef T Type; };
-template <typename T> using RemoveConstOrBogus = typename RemoveConstOrBogus_<T>::Type;
+template <typename T> struct RemoveConstOrDisable_ { struct Type; };
+template <typename T> struct RemoveConstOrDisable_<const T> { typedef T Type; };
+template <typename T> using RemoveConstOrDisable = typename RemoveConstOrDisable_<T>::Type;
 
 template <typename T> struct IsReference_ { static constexpr bool value = false; };
 template <typename T> struct IsReference_<T&> { static constexpr bool value = true; };
@@ -724,20 +728,35 @@ namespace _ {  // private
 template <typename Func>
 class Deferred {
 public:
-  inline Deferred(Func func): func(func) {}
-  inline ~Deferred() { func(); }
+  inline Deferred(Func func): func(func), canceled(false) {}
+  inline ~Deferred() { if (!canceled) func(); }
+  KJ_DISALLOW_COPY(Deferred);
+
+  // This move constructor is usually optimized away by the compiler.
+  inline Deferred(Deferred&& other): func(kj::mv(other.func)) {
+    other.canceled = true;
+  }
 private:
   Func func;
+  bool canceled;
 };
-
-template <typename Func>
-Deferred<Decay<Func>> defer(Func&& func) {
-  return Deferred<Decay<Func>>(kj::fwd<Func>(func));
-}
 
 }  // namespace _ (private)
 
-#define KJ_DEFER(code) auto KJ_UNIQUE_NAME(_kjDefer) = ::kj::_::defer([&](){code;})
+template <typename Func>
+_::Deferred<Decay<Func>> defer(Func&& func) {
+  // Returns an object which will invoke the given functor in its destructor.  The object is not
+  // copyable but is movable with the semantics you'd expect.  Since the return type is private,
+  // you need to assign to an `auto` variable.
+  //
+  // The KJ_DEFER macro provides slightly more convenient syntax for the common case where you
+  // want some code to run at function exit.
+
+  return _::Deferred<Decay<Func>>(kj::fwd<Func>(func));
+}
+
+#define KJ_DEFER(code) auto KJ_UNIQUE_NAME(_kjDefer) = ::kj::defer([&](){code;})
+// Run the given code when the function exits, whether by return or exception.
 
 }  // namespace kj
 

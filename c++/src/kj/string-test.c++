@@ -36,6 +36,19 @@ TEST(String, Str) {
   EXPECT_EQ("foo", str('f', 'o', 'o'));
 }
 
+TEST(String, StartsEndsWith) {
+  EXPECT_TRUE(StringPtr("foobar").startsWith("foo"));
+  EXPECT_FALSE(StringPtr("foobar").startsWith("bar"));
+  EXPECT_FALSE(StringPtr("foobar").endsWith("foo"));
+  EXPECT_TRUE(StringPtr("foobar").endsWith("bar"));
+
+  EXPECT_FALSE(StringPtr("fo").startsWith("foo"));
+  EXPECT_FALSE(StringPtr("fo").endsWith("foo"));
+
+  EXPECT_TRUE(StringPtr("foobar").startsWith(""));
+  EXPECT_TRUE(StringPtr("foobar").endsWith(""));
+}
+
 }  // namespace
 }  // namespace _ (private)
 }  // namespace kj

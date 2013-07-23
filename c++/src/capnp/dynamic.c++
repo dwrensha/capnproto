@@ -1559,12 +1559,12 @@ DynamicList::Builder PointerHelpers<DynamicList, Kind::UNKNOWN>::init(
 
 // -------------------------------------------------------------------
 
-Orphan<DynamicStruct> Orphanage::newOrphan(StructSchema schema) {
+Orphan<DynamicStruct> Orphanage::newOrphan(StructSchema schema) const {
   return Orphan<DynamicStruct>(
       schema, _::OrphanBuilder::initStruct(arena, structSizeFromSchema(schema)));
 }
 
-Orphan<DynamicList> Orphanage::newOrphan(ListSchema schema, uint size) {
+Orphan<DynamicList> Orphanage::newOrphan(ListSchema schema, uint size) const {
   if (schema.whichElementType() == schema::Type::Body::STRUCT_TYPE) {
     return Orphan<DynamicList>(schema, _::OrphanBuilder::initStructList(
         arena, size * ELEMENTS, structSizeFromSchema(schema.getStructElementType())));
@@ -1578,6 +1578,10 @@ DynamicStruct::Builder Orphan<DynamicStruct>::get() {
   return DynamicStruct::Builder(schema, builder.asStruct(structSizeFromSchema(schema)));
 }
 
+DynamicStruct::Reader Orphan<DynamicStruct>::getReader() const {
+  return DynamicStruct::Reader(schema, builder.asStructReader(structSizeFromSchema(schema)));
+}
+
 DynamicList::Builder Orphan<DynamicList>::get() {
   if (schema.whichElementType() == schema::Type::Body::STRUCT_TYPE) {
     return DynamicList::Builder(
@@ -1586,6 +1590,11 @@ DynamicList::Builder Orphan<DynamicList>::get() {
     return DynamicList::Builder(
         schema, builder.asList(elementSizeFor(schema.whichElementType())));
   }
+}
+
+DynamicList::Reader Orphan<DynamicList>::getReader() const {
+  return DynamicList::Reader(
+      schema, builder.asListReader(elementSizeFor(schema.whichElementType())));
 }
 
 }  // namespace capnp

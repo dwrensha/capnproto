@@ -21,26 +21,46 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef ERROR_REPORTER_H_
-#define ERROR_REPORTER_H_
+#ifndef KJ_THREAD_H_
+#define KJ_THREAD_H_
 
-#include "../common.h"
-#include <kj/string.h>
+#include "common.h"
 
-namespace capnp {
-namespace compiler {
+namespace kj {
 
-class ErrorReporter {
+class Thread {
+  // A thread!  Pass a lambda to the constructor.  The destructor joins the thread.
+
 public:
-  virtual ~ErrorReporter() noexcept(false);
+  template <typename Func>
+  explicit Thread(Func&& func)
+      : Thread(&runThread<Decay<Func>>,
+               &deleteArg<Decay<Func>>,
+               new Decay<Func>(kj::fwd<Func>(func))) {}
 
-  virtual void addError(uint32_t startByte, uint32_t endByte, kj::StringPtr message) = 0;
-  // Report an error at the given location in the input text.  `startByte` and `endByte` indicate
-  // the span of text that is erroneous.  They may be equal, in which case the parser was only
-  // able to identify where the error begins, not where it ends.
+  ~Thread();
+
+private:
+  unsigned long long threadId;  // actually pthread_t
+
+  Thread(void* (*run)(void*), void (*deleteArg)(void*), void* arg);
+
+  template <typename Func>
+  static void* runThread(void* ptr) {
+    // TODO(someday):  Catch exceptions and propagate to the joiner.
+
+    Func* func = reinterpret_cast<Func*>(ptr);
+    KJ_DEFER(delete func);
+    (*func)();
+    return nullptr;
+  }
+
+  template <typename Func>
+  static void deleteArg(void* ptr) {
+    delete reinterpret_cast<Func*>(ptr);
+  }
 };
 
-}  // namespace compiler
-}  // namespace capnp
+}  // namespace kj
 
-#endif  // ERROR_REPORTER_H_
+#endif  // KJ_THREAD_H_

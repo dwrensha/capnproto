@@ -21,26 +21,25 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef ERROR_REPORTER_H_
-#define ERROR_REPORTER_H_
+#ifndef CAPNP_PRETTY_PRINT_H_
+#define CAPNP_PRETTY_PRINT_H_
 
-#include "../common.h"
+#include "dynamic.h"
 #include <kj/string.h>
 
 namespace capnp {
-namespace compiler {
 
-class ErrorReporter {
-public:
-  virtual ~ErrorReporter() noexcept(false);
+kj::String prettyPrint(DynamicStruct::Reader value);
+kj::String prettyPrint(DynamicStruct::Builder value);
+kj::String prettyPrint(DynamicList::Reader value);
+kj::String prettyPrint(DynamicList::Builder value);
+// Print the given Cap'n Proto struct or list with nice indentation.  Note that you can pass any
+// struct or list reader or builder type to this method, since they can be implicitly converted
+// to one of the dynamic types.
+//
+// If you don't want indentation, just use the value's KJ stringifier (e.g. pass it to kj::str(),
+// any of the KJ debug macros, etc.).
 
-  virtual void addError(uint32_t startByte, uint32_t endByte, kj::StringPtr message) = 0;
-  // Report an error at the given location in the input text.  `startByte` and `endByte` indicate
-  // the span of text that is erroneous.  They may be equal, in which case the parser was only
-  // able to identify where the error begins, not where it ends.
-};
-
-}  // namespace compiler
 }  // namespace capnp
 
-#endif  // ERROR_REPORTER_H_
+#endif  // PRETTY_PRINT_H_

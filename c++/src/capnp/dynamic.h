@@ -104,21 +104,13 @@ BuilderFor<DynamicTypeFor<FromBuilder<T>>> toDynamic(T&& value);
 template <typename T>
 DynamicTypeFor<TypeIfEnum<T>> toDynamic(T&& value);
 
-template <typename T> struct EnableIfNotDynamic_ { typedef T Type; };
-template <> struct EnableIfNotDynamic_<DynamicUnion> {};
-template <> struct EnableIfNotDynamic_<DynamicStruct> {};
-template <> struct EnableIfNotDynamic_<DynamicList> {};
-template <> struct EnableIfNotDynamic_<DynamicValue> {};
-template <typename T>
-using EnableIfNotDynamic = typename EnableIfNotDynamic_<T>::Type;
-
 // -------------------------------------------------------------------
 
 class DynamicEnum {
 public:
   DynamicEnum() = default;
 
-  template <typename T, typename = TypeIfEnum<T>>
+  template <typename T, typename = kj::EnableIf<kind<T>() == Kind::ENUM>>
   inline DynamicEnum(T&& value): DynamicEnum(toDynamic(value)) {}
 
   template <typename T>
@@ -271,7 +263,7 @@ public:
 
   Reader() = default;
 
-  template <typename T, typename = EnableIfNotDynamic<FromReader<T>>>
+  template <typename T, typename = kj::EnableIf<kind<FromReader<T>>() == Kind::STRUCT>>
   inline Reader(T&& value): Reader(toDynamic(value)) {}
 
   template <typename T>
@@ -314,6 +306,7 @@ private:
   friend kj::String _::structString(
       _::StructReader reader, const _::RawSchema& schema);
   friend class Orphanage;
+  friend class Orphan<DynamicStruct>;
 };
 
 class DynamicStruct::Builder {
@@ -322,7 +315,7 @@ public:
 
   Builder() = default;
 
-  template <typename T, typename = EnableIfNotDynamic<FromBuilder<T>>>
+  template <typename T, typename = kj::EnableIf<kind<FromBuilder<T>>() == Kind::STRUCT>>
   inline Builder(T&& value): Builder(toDynamic(value)) {}
 
   template <typename T>
@@ -433,7 +426,7 @@ public:
 
   Reader() = default;
 
-  template <typename T, typename = EnableIfNotDynamic<FromReader<T>>>
+  template <typename T, typename = kj::EnableIf<kind<FromReader<T>>() == Kind::LIST>>
   inline Reader(T&& value): Reader(toDynamic(value)) {}
 
   template <typename T>
@@ -464,6 +457,7 @@ private:
   template <typename T, ::capnp::Kind k>
   friend struct ::capnp::ToDynamic_;
   friend class Orphanage;
+  friend class Orphan<DynamicList>;
 };
 
 class DynamicList::Builder {
@@ -472,7 +466,7 @@ public:
 
   Builder() = default;
 
-  template <typename T, typename = EnableIfNotDynamic<FromBuilder<T>>>
+  template <typename T, typename = kj::EnableIf<kind<FromBuilder<T>>() == Kind::LIST>>
   inline Builder(T&& value): Builder(toDynamic(value)) {}
 
   template <typename T>
@@ -693,6 +687,7 @@ public:
   Orphan& operator=(Orphan&&) = default;
 
   DynamicStruct::Builder get();
+  DynamicStruct::Reader getReader() const;
 
   inline bool operator==(decltype(nullptr)) { return builder == nullptr; }
   inline bool operator!=(decltype(nullptr)) { return builder == nullptr; }
@@ -719,6 +714,7 @@ public:
   Orphan& operator=(Orphan&&) = default;
 
   DynamicList::Builder get();
+  DynamicList::Reader getReader() const;
 
   inline bool operator==(decltype(nullptr)) { return builder == nullptr; }
   inline bool operator!=(decltype(nullptr)) { return builder == nullptr; }
@@ -752,14 +748,14 @@ struct Orphanage::GetInnerBuilder<DynamicList, Kind::UNKNOWN> {
 
 template <>
 inline Orphan<DynamicStruct> Orphanage::newOrphanCopy<DynamicStruct::Reader>(
-    const DynamicStruct::Reader& copyFrom) {
+    const DynamicStruct::Reader& copyFrom) const {
   return Orphan<DynamicStruct>(
       copyFrom.getSchema(), _::OrphanBuilder::copy(arena, copyFrom.reader));
 }
 
 template <>
 inline Orphan<DynamicList> Orphanage::newOrphanCopy<DynamicList::Reader>(
-    const DynamicList::Reader& copyFrom) {
+    const DynamicList::Reader& copyFrom) const {
   return Orphan<DynamicList>(copyFrom.getSchema(), _::OrphanBuilder::copy(arena, copyFrom.reader));
 }
 

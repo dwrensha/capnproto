@@ -109,7 +109,9 @@ includekj_HEADERS =                                            \
   src/kj/debug.h                                               \
   src/kj/arena.h                                               \
   src/kj/io.h                                                  \
-  src/kj/tuple.h
+  src/kj/tuple.h                                               \
+  src/kj/mutex.h                                               \
+  src/kj/thread.h
 
 includekjparse_HEADERS =                                       \
   src/kj/parse/common.h                                        \
@@ -126,6 +128,7 @@ includecapnp_HEADERS =                                         \
   src/capnp/schema.h                                           \
   src/capnp/schema-loader.h                                    \
   src/capnp/dynamic.h                                          \
+  src/capnp/pretty-print.h                                     \
   src/capnp/serialize.h                                        \
   src/capnp/serialize-packed.h                                 \
   src/capnp/generated-header-support.h
@@ -145,6 +148,8 @@ libcapnp_la_SOURCES=                                           \
   src/kj/debug.c++                                             \
   src/kj/arena.c++                                             \
   src/kj/io.c++                                                \
+  src/kj/mutex.c++                                             \
+  src/kj/thread.c++                                            \
   src/kj/parse/char.c++                                        \
   src/capnp/blob.c++                                           \
   src/capnp/arena.h                                            \
@@ -194,6 +199,7 @@ capnp_test_SOURCES =                                           \
   src/kj/arena-test.c++                                        \
   src/kj/units-test.c++                                        \
   src/kj/tuple-test.c++                                        \
+  src/kj/mutex-test.c++                                        \
   src/kj/parse/common-test.c++                                 \
   src/kj/parse/char-test.c++                                   \
   src/capnp/blob-test.c++                                      \

@@ -21,26 +21,25 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef ERROR_REPORTER_H_
-#define ERROR_REPORTER_H_
+#include "thread.h"
+#include "debug.h"
+#include <pthread.h>
 
-#include "../common.h"
-#include <kj/string.h>
+namespace kj {
 
-namespace capnp {
-namespace compiler {
+Thread::Thread(void* (*run)(void*), void (*deleteArg)(void*), void* arg) {
+  static_assert(sizeof(threadId) >= sizeof(pthread_t),
+                "pthread_t is larger than a long long on your platform.  Please port.");
 
-class ErrorReporter {
-public:
-  virtual ~ErrorReporter() noexcept(false);
+  int pthreadResult = pthread_create(reinterpret_cast<pthread_t*>(&threadId), nullptr, run, arg);
+  if (pthreadResult != 0) {
+    deleteArg(arg);
+    KJ_FAIL_SYSCALL("pthread_create", pthreadResult);
+  }
+}
 
-  virtual void addError(uint32_t startByte, uint32_t endByte, kj::StringPtr message) = 0;
-  // Report an error at the given location in the input text.  `startByte` and `endByte` indicate
-  // the span of text that is erroneous.  They may be equal, in which case the parser was only
-  // able to identify where the error begins, not where it ends.
-};
+Thread::~Thread() {
+  KJ_ASSERT(pthread_join(*reinterpret_cast<pthread_t*>(&threadId), nullptr) == 0);
+}
 
-}  // namespace compiler
-}  // namespace capnp
-
-#endif  // ERROR_REPORTER_H_
+}  // namespace kj
