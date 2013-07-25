@@ -21,34 +21,45 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef ERROR_REPORTER_H_
-#define ERROR_REPORTER_H_
-
-#include "../common.h"
-#include <kj/string.h>
+#include "md5.h"
+#include <gtest/gtest.h>
 
 namespace capnp {
 namespace compiler {
+namespace {
 
-class ErrorReporter {
-public:
-  virtual ~ErrorReporter() noexcept(false);
+static kj::String doMd5(kj::StringPtr text) {
+  Md5 md5;
+  md5.update(text);
+  return kj::str(md5.finishAsHex().cStr());
+}
 
-  virtual void addError(uint32_t startByte, uint32_t endByte, kj::StringPtr message) const = 0;
-  // Report an error at the given location in the input text.  `startByte` and `endByte` indicate
-  // the span of text that is erroneous.  They may be equal, in which case the parser was only
-  // able to identify where the error begins, not where it ends.
+TEST(Md5, Sum) {
+  EXPECT_STREQ("acbd18db4cc2f85cedef654fccc4a4d8", doMd5("foo").cStr());
+  EXPECT_STREQ("37b51d194a7513e45b56f6524f2d51f2", doMd5("bar").cStr());
+  EXPECT_STREQ("3858f62230ac3c915f300c664312c63f", doMd5("foobar").cStr());
 
-  template <typename T>
-  inline void addErrorOn(T&& decl, kj::StringPtr message) const {
-    // Works for any `T` that defines `getStartByte()` and `getEndByte()` methods, which many
-    // of the Cap'n Proto types defined in `grammar.capnp` do.
-
-    addError(decl.getStartByte(), decl.getEndByte(), message);
+  {
+    Md5 md5;
+    md5.update("foo");
+    md5.update("bar");
+    EXPECT_STREQ("3858f62230ac3c915f300c664312c63f", md5.finishAsHex().cStr());
   }
-};
 
+  EXPECT_STREQ("ebf2442d167a30ca4453f99abd8cddf4", doMd5(
+      "Hello, this is a long string that is more than 64 bytes because the md5 code uses a "
+      "buffer of 64 bytes.").cStr());
+
+  {
+    Md5 md5;
+    md5.update("Hello, this is a long string ");
+    md5.update("that is more than 64 bytes ");
+    md5.update("because the md5 code uses a ");
+    md5.update("buffer of 64 bytes.");
+    EXPECT_STREQ("ebf2442d167a30ca4453f99abd8cddf4", md5.finishAsHex().cStr());
+  }
+}
+
+}  // namespace
 }  // namespace compiler
 }  // namespace capnp
-
-#endif  // ERROR_REPORTER_H_
