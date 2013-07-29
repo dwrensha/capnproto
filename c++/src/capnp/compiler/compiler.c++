@@ -89,8 +89,8 @@ public:
 
   // implements NodeTranslator::Resolver -----------------------------
   kj::Maybe<ResolvedName> resolve(const DeclName::Reader& name) const override;
-  kj::Maybe<Schema> resolveMaybeBootstrapSchema(uint64_t id) const override;
-  kj::Maybe<Schema> resolveFinalSchema(uint64_t id) const override;
+  Schema resolveMaybeBootstrapSchema(uint64_t id) const override;
+  Schema resolveFinalSchema(uint64_t id) const override;
 
 private:
   const CompiledModule* module;  // null iff isBuiltin is true
@@ -183,7 +183,7 @@ private:
 
 class Compiler::CompiledModule {
 public:
-  CompiledModule(const Compiler::Impl& compiler, const Module<ParsedFile::Reader>& parserModule);
+  CompiledModule(const Compiler::Impl& compiler, const Module& parserModule);
 
   const Compiler::Impl& getCompiler() const { return compiler; }
 
@@ -196,7 +196,7 @@ public:
 
 private:
   const Compiler::Impl& compiler;
-  const Module<ParsedFile::Reader>& parserModule;
+  const Module& parserModule;
   MallocMessageBuilder contentArena;
   ParsedFile::Reader content;
   Node rootNode;
@@ -206,7 +206,7 @@ class Compiler::Impl: public SchemaLoader::LazyLoadCallback {
 public:
   Impl();
 
-  const CompiledModule& add(const Module<ParsedFile::Reader>& parsedModule) const;
+  const CompiledModule& add(const Module& parsedModule) const;
 
   struct Workspace {
     // Scratch space where stuff can be allocated while working.  The Workspace is available
@@ -264,7 +264,7 @@ private:
   uint workspaceRefcount = 0;
   // Count of threads that have entered the compiler.
 
-  typedef std::unordered_map<Module<ParsedFile::Reader>*, kj::Own<CompiledModule>> ModuleMap;
+  typedef std::unordered_map<Module*, kj::Own<CompiledModule>> ModuleMap;
   kj::MutexGuarded<ModuleMap> modules;
   // Map of parser modules to compiler modules.
 
@@ -608,20 +608,26 @@ kj::Maybe<NodeTranslator::Resolver::ResolvedName> Compiler::Node::resolve(
   });
 }
 
-kj::Maybe<Schema> Compiler::Node::resolveMaybeBootstrapSchema(uint64_t id) const {
-  return module->getCompiler().findNode(id).map(
-      [](const Node& node) { return node.getBootstrapOrFinalSchema(); });
+Schema Compiler::Node::resolveMaybeBootstrapSchema(uint64_t id) const {
+  KJ_IF_MAYBE(node, module->getCompiler().findNode(id)) {
+    return node->getBootstrapOrFinalSchema();
+  } else {
+    KJ_FAIL_REQUIRE("Tried to get schema for ID we haven't seen before.");
+  }
 }
 
-kj::Maybe<Schema> Compiler::Node::resolveFinalSchema(uint64_t id) const {
-  return module->getCompiler().findNode(id).map(
-      [](const Node& node) { return node.getFinalSchema(); });
+Schema Compiler::Node::resolveFinalSchema(uint64_t id) const {
+  KJ_IF_MAYBE(node, module->getCompiler().findNode(id)) {
+    return node->getFinalSchema();
+  } else {
+    KJ_FAIL_REQUIRE("Tried to get schema for ID we haven't seen before.");
+  }
 }
 
 // =======================================================================================
 
 Compiler::CompiledModule::CompiledModule(
-    const Compiler::Impl& compiler, const Module<ParsedFile::Reader>& parserModule)
+    const Compiler::Impl& compiler, const Module& parserModule)
     : compiler(compiler), parserModule(parserModule),
       content(parserModule.loadContent(contentArena.getOrphanage())),
       rootNode(*this) {}
@@ -629,7 +635,7 @@ Compiler::CompiledModule::CompiledModule(
 kj::Maybe<const Compiler::CompiledModule&> Compiler::CompiledModule::importRelative(
     kj::StringPtr importPath) const {
   return parserModule.importRelative(importPath).map(
-      [this](const Module<ParsedFile::Reader>& module) -> const Compiler::CompiledModule& {
+      [this](const Module& module) -> const Compiler::CompiledModule& {
         return compiler.add(module);
       });
 }
@@ -644,19 +650,7 @@ Compiler::Impl::Impl(): finalLoader(*this), workspace(nullptr) {
   for (auto member: declBodySchema.getMembers()) {
     auto name = member.getProto().getName();
     if (name.startsWith("builtin")) {
-      kj::StringPtr symbolName;
-      if (name.endsWith("Value")) {
-        // e.g. "builtinTrueValue" -- transform this to "true".
-        auto substr = name.slice(strlen("builtin"), name.size() - strlen("Value"));
-        kj::ArrayPtr<char> array = nodeArena.allocateArray<char>(substr.size() + 1);
-        memcpy(array.begin(), substr.begin(), substr.size());
-        array[substr.size()] = '\0';
-        array[0] += 'a' - 'A';
-        symbolName = kj::StringPtr(array.begin(), array.size() - 1);
-      } else {
-        // e.g. "builtinVoid" -- transform this to "Void".
-        symbolName = name.slice(strlen("builtin"));
-      }
+      kj::StringPtr symbolName = name.slice(strlen("builtin"));
       builtinDecls[symbolName] = nodeArena.allocateOwn<Node>(
           symbolName, static_cast<Declaration::Body::Which>(member.getIndex()));
     }

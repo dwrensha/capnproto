@@ -28,6 +28,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <limits>
 
 namespace capnp {
 namespace compiler {
@@ -50,7 +51,7 @@ uint64_t randomId() {
 }  // namespace
 
 void parseFile(List<Statement>::Reader statements, ParsedFile::Builder result,
-               ErrorReporter& errorReporter) {
+               const ErrorReporter& errorReporter) {
   CapnpParser parser(Orphanage::getForMessageContaining(result), errorReporter);
 
   kj::Vector<Orphan<Declaration>> decls(statements.size());
@@ -202,7 +203,7 @@ class ParseListItems {
   // Transformer that parses all items in the input token sequence list using the given parser.
 
 public:
-  constexpr ParseListItems(ItemParser&& itemParser, ErrorReporter& errorReporter)
+  constexpr ParseListItems(ItemParser&& itemParser, const ErrorReporter& errorReporter)
       : itemParser(p::sequence(kj::fwd<ItemParser>(itemParser), p::endOfInput)),
         errorReporter(errorReporter) {}
 
@@ -240,11 +241,12 @@ public:
 
 private:
   decltype(p::sequence(kj::instance<ItemParser>(), p::endOfInput)) itemParser;
-  ErrorReporter& errorReporter;
+  const ErrorReporter& errorReporter;
 };
 
 template <typename ItemParser>
-constexpr auto parenthesizedList(ItemParser&& itemParser, ErrorReporter& errorReporter) -> decltype(
+constexpr auto parenthesizedList(ItemParser&& itemParser,
+                                 const ErrorReporter& errorReporter) -> decltype(
          transform(rawParenthesizedList, ParseListItems<ItemParser>(
              kj::fwd<ItemParser>(itemParser), errorReporter))) {
   return transform(rawParenthesizedList, ParseListItems<ItemParser>(
@@ -252,7 +254,8 @@ constexpr auto parenthesizedList(ItemParser&& itemParser, ErrorReporter& errorRe
 }
 
 template <typename ItemParser>
-constexpr auto bracketedList(ItemParser&& itemParser, ErrorReporter& errorReporter) -> decltype(
+constexpr auto bracketedList(ItemParser&& itemParser,
+                             const ErrorReporter& errorReporter) -> decltype(
          transform(rawBracketedList, ParseListItems<ItemParser>(
              kj::fwd<ItemParser>(itemParser), errorReporter))) {
   return transform(rawBracketedList, ParseListItems<ItemParser>(
@@ -299,13 +302,22 @@ inline Declaration::Builder initMemberDecl(
   return builder;
 }
 
+template <typename BuilderType>
+void initLocation(kj::parse::Span<List<Token>::Reader::Iterator> location,
+                  BuilderType builder) {
+  if (location.begin() < location.end()) {
+    builder.setStartByte(location.begin()->getStartByte());
+    builder.setEndByte((location.end() - 1)->getEndByte());
+  }
+}
+
 }  // namespace
 
 // =======================================================================================
 
-CapnpParser::CapnpParser(Orphanage orphanageParam, ErrorReporter& errorReporterParam)
+CapnpParser::CapnpParser(Orphanage orphanageParam, const ErrorReporter& errorReporterParam)
     : orphanage(orphanageParam), errorReporter(errorReporterParam) {
-  parsers.declName = arena.copy(p::transform(
+  parsers.declName = arena.copy(p::transformWithLocation(
       p::sequence(
           p::oneOf(
               p::transform(p::sequence(keyword("import"), stringLiteral),
@@ -327,19 +339,23 @@ CapnpParser::CapnpParser(Orphanage orphanageParam, ErrorReporter& errorReporterP
                     return result;
                   })),
           p::many(p::sequence(op("."), identifier))),
-      [this](Orphan<DeclName>&& result, kj::Array<Located<Text::Reader>>&& memberPath)
+      [this](kj::parse::Span<List<Token>::Reader::Iterator> location,
+             Orphan<DeclName>&& result, kj::Array<Located<Text::Reader>>&& memberPath)
           -> Orphan<DeclName> {
-        auto builder = result.get().initMemberPath(memberPath.size());
+        auto builder = result.get();
+        auto pathBuilder = builder.initMemberPath(memberPath.size());
         for (size_t i = 0; i < memberPath.size(); i++) {
-          memberPath[i].copyTo(builder[i]);
+          memberPath[i].copyTo(pathBuilder[i]);
         }
+        initLocation(location, builder);
         return kj::mv(result);
       }));
 
-  parsers.typeExpression = arena.copy(p::transform(
+  parsers.typeExpression = arena.copy(p::transformWithLocation(
       p::sequence(parsers.declName, p::optional(
           parenthesizedList(parsers.typeExpression, errorReporter))),
-      [this](Orphan<DeclName>&& name,
+      [this](kj::parse::Span<List<Token>::Reader::Iterator> location,
+             Orphan<DeclName>&& name,
              kj::Maybe<Located<kj::Array<kj::Maybe<Orphan<TypeExpression>>>>>&& params)
              -> Orphan<TypeExpression> {
         auto result = orphanage.newOrphan<TypeExpression>();
@@ -356,6 +372,7 @@ CapnpParser::CapnpParser(Orphanage orphanageParam, ErrorReporter& errorReporterP
             }
           }
         }
+        initLocation(location, builder);
         return result;
       }));
 
@@ -451,6 +468,15 @@ CapnpParser::CapnpParser(Orphanage orphanageParam, ErrorReporter& errorReporterP
             value.copyLocationTo(builder);
             return result;
           }),
+      p::transformWithLocation(p::sequence(op("-"), keyword("inf")),
+          [this](kj::parse::Span<List<Token>::Reader::Iterator> location)
+              -> Orphan<ValueExpression> {
+            auto result = orphanage.newOrphan<ValueExpression>();
+            auto builder = result.get();
+            builder.getBody().setFloat(-std::numeric_limits<double>::infinity());
+            initLocation(location, builder);
+            return result;
+          }),
       p::transform(stringLiteral,
           [this](Located<Text::Reader>&& value) -> Orphan<ValueExpression> {
             auto result = orphanage.newOrphan<ValueExpression>();
@@ -474,12 +500,13 @@ CapnpParser::CapnpParser(Orphanage orphanageParam, ErrorReporter& errorReporterP
 
             return result;
           }),
-      p::transform(identifier,
-          [this](Located<Text::Reader>&& value) -> Orphan<ValueExpression> {
+      p::transformWithLocation(parsers.declName,
+          [this](kj::parse::Span<List<Token>::Reader::Iterator> location,
+                 Orphan<DeclName>&& value) -> Orphan<ValueExpression> {
             auto result = orphanage.newOrphan<ValueExpression>();
             auto builder = result.get();
-            builder.getBody().setIdentifier(value.value);
-            value.copyLocationTo(builder);
+            builder.getBody().adoptName(kj::mv(value));
+            initLocation(location, builder);
             return result;
           }),
       p::transform(bracketedList(parsers.valueExpression, errorReporter),
@@ -518,10 +545,9 @@ CapnpParser::CapnpParser(Orphanage orphanageParam, ErrorReporter& errorReporterP
           })
       ));
 
-  parsers.annotation = arena.copy(p::transformWithLocation(
+  parsers.annotation = arena.copy(p::transform(
       p::sequence(op("$"), parsers.declName, p::optional(parsers.parenthesizedValueExpression)),
-      [this](kj::parse::Span<List<Token>::Reader::Iterator> location,
-             Orphan<DeclName>&& name, kj::Maybe<Orphan<ValueExpression>>&& value)
+      [this](Orphan<DeclName>&& name, kj::Maybe<Orphan<ValueExpression>>&& value)
           -> Orphan<Declaration::AnnotationApplication> {
         auto result = orphanage.newOrphan<Declaration::AnnotationApplication>();
         auto builder = result.get();

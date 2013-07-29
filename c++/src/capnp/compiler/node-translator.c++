@@ -26,7 +26,7 @@
 #include <kj/arena.h>
 #include <set>
 #include <map>
-#include <limits.h>
+#include <limits>
 
 namespace capnp {
 namespace compiler {
@@ -38,7 +38,7 @@ class NodeTranslator::StructLayout {
 public:
   template <typename UIntType>
   struct HoleSet {
-    inline HoleSet() {}
+    inline HoleSet(): holes{0, 0, 0, 0, 0, 0} {}
 
     // Represents a set of "holes" within a segment of allocated space, up to one hole of each
     // power-of-two size between 1 bit and 32 bits.
@@ -62,7 +62,7 @@ public:
     //    a series of holes between N and 64 bits, as described in point (1).  Thus, again, there
     //    is still at most one hole of each size, and the largest hole is 32 bits.
 
-    UIntType holes[6] = {0, 0, 0, 0, 0, 0};
+    UIntType holes[6];
     // The offset of each hole as a multiple of its size.  A value of zero indicates that no hole
     // exists.  Notice that it is impossible for any actual hole to have an offset of zero, because
     // the first field allocated is always placed at the very beginning of the section.  So either
@@ -138,7 +138,7 @@ public:
       }
     }
 
-    kj::Maybe<int> smallestAtLeast(uint size) {
+    kj::Maybe<uint> smallestAtLeast(uint size) {
       // Return the size of the smallest hole that is equal to or larger than the given size.
 
       for (uint i = size; i < KJ_ARRAY_SIZE(holes); i++) {
@@ -147,6 +147,20 @@ public:
         }
       }
       return nullptr;
+    }
+
+    uint getFirstWordUsed() {
+      // Computes the lg of the amount of space used in the first word of the section.
+
+      // If there is a 32-bit hole with a 32-bit offset, no more than the first 32 bits are used.
+      // If no more than the first 32 bits are used, and there is a 16-bit hole with a 16-bit
+      // offset, then no more than the first 16 bits are used.  And so on.
+      for (uint i = KJ_ARRAY_SIZE(holes); i > 0; i--) {
+        if (holes[i - 1] != 1) {
+          return i;
+        }
+      }
+      return 0;
     }
   };
 
@@ -461,7 +475,7 @@ public:
     KJ_DISALLOW_COPY(Group);
 
     uint addData(uint lgSize) override {
-      uint bestSize = UINT_MAX;
+      uint bestSize = std::numeric_limits<uint>::max();
       kj::Maybe<uint> bestLocation = nullptr;
 
       for (uint i = 0; i < parent.dataLocations.size(); i++) {
@@ -556,7 +570,7 @@ schema::Node::Reader NodeTranslator::finish() {
   // `unfinishedValues`, invalidating iterators in the process.
   for (size_t i = 0; i < unfinishedValues.size(); i++) {
     auto& value = unfinishedValues[i];
-    compileFinalValue(value.source, value.type, value.target);
+    compileValue(value.source, value.type, value.target, false);
   }
 
   return wipNode.getReader();
@@ -565,27 +579,35 @@ schema::Node::Reader NodeTranslator::finish() {
 void NodeTranslator::compileNode(Declaration::Reader decl, schema::Node::Builder builder) {
   checkMembers(decl.getNestedDecls(), decl.getBody().which());
 
+  kj::StringPtr targetsFlagName;
+
   switch (decl.getBody().which()) {
     case Declaration::Body::FILE_DECL:
       compileFile(decl, builder.getBody().initFileNode());
+      targetsFlagName = "targetsFile";
       break;
     case Declaration::Body::CONST_DECL:
       compileConst(decl.getBody().getConstDecl(), builder.getBody().initConstNode());
+      targetsFlagName = "targetsConst";
       break;
     case Declaration::Body::ANNOTATION_DECL:
       compileAnnotation(decl.getBody().getAnnotationDecl(), builder.getBody().initAnnotationNode());
+      targetsFlagName = "targetsAnnotation";
       break;
     case Declaration::Body::ENUM_DECL:
       compileEnum(decl.getBody().getEnumDecl(), decl.getNestedDecls(),
                   builder.getBody().initEnumNode());
+      targetsFlagName = "targetsEnum";
       break;
     case Declaration::Body::STRUCT_DECL:
       compileStruct(decl.getBody().getStructDecl(), decl.getNestedDecls(),
                     builder.getBody().initStructNode());
+      targetsFlagName = "targetsStruct";
       break;
     case Declaration::Body::INTERFACE_DECL:
       compileInterface(decl.getBody().getInterfaceDecl(), decl.getNestedDecls(),
                        builder.getBody().initInterfaceNode());
+      targetsFlagName = "targetsInterface";
       break;
 
     default:
@@ -593,7 +615,7 @@ void NodeTranslator::compileNode(Declaration::Reader decl, schema::Node::Builder
       break;
   }
 
-  // TODO(now): annotations
+  builder.adoptAnnotations(compileAnnotationApplications(decl.getAnnotations(), targetsFlagName));
 }
 
 void NodeTranslator::checkMembers(
@@ -927,6 +949,34 @@ public:
         KJ_FAIL_ASSERT("addDiscriminant() didn't set the offset?");
       }
     }
+
+    // And fill in the sizes.
+    builder.setDataSectionWordSize(layout.getTop().dataWordCount);
+    builder.setPointerSectionSize(layout.getTop().pointerCount);
+    builder.setPreferredListEncoding(schema::ElementSize::INLINE_COMPOSITE);
+
+    if (layout.getTop().pointerCount == 0) {
+      if (layout.getTop().dataWordCount == 0) {
+        builder.setPreferredListEncoding(schema::ElementSize::EMPTY);
+      } else if (layout.getTop().dataWordCount == 1) {
+        KJ_IF_MAYBE(smallestHole, layout.getTop().holes.smallestAtLeast(0)) {
+
+        }
+        switch (layout.getTop().holes.getFirstWordUsed()) {
+          case 0: builder.setPreferredListEncoding(schema::ElementSize::BIT); break;
+          case 1:
+          case 2:
+          case 3: builder.setPreferredListEncoding(schema::ElementSize::BYTE); break;
+          case 4: builder.setPreferredListEncoding(schema::ElementSize::TWO_BYTES); break;
+          case 5: builder.setPreferredListEncoding(schema::ElementSize::FOUR_BYTES); break;
+          case 6: builder.setPreferredListEncoding(schema::ElementSize::EIGHT_BYTES); break;
+          default: KJ_FAIL_ASSERT("Expected 0, 1, 2, 3, 4, 5, or 6."); break;
+        }
+      }
+    } else if (layout.getTop().pointerCount == 1 &&
+               layout.getTop().dataWordCount == 0) {
+      builder.setPreferredListEncoding(schema::ElementSize::POINTER);
+    }
   }
 
 private:
@@ -1009,7 +1059,7 @@ private:
   // Unions that need to have their discriminant offsets filled in after layout is complete.
 
   uint traverseUnion(List<Declaration>::Reader members, MemberInfo& parent) {
-    uint minOrdinal = UINT_MAX;
+    uint minOrdinal = std::numeric_limits<uint>::max();
     uint codeOrder = 0;
 
     if (members.size() < 2) {
@@ -1057,7 +1107,7 @@ private:
   }
 
   uint traverseGroup(List<Declaration>::Reader members, MemberInfo& parent) {
-    uint minOrdinal = UINT_MAX;
+    uint minOrdinal = std::numeric_limits<uint>::max();
     uint codeOrder = 0;
 
     if (members.size() < 2) {
@@ -1110,7 +1160,7 @@ private:
 void NodeTranslator::compileStruct(Declaration::Struct::Reader decl,
                                    List<Declaration>::Reader members,
                                    schema::StructNode::Builder builder) {
-
+  StructTranslator(*this).translate(decl, members, builder);
 }
 
 // -------------------------------------------------------------------
@@ -1118,24 +1168,604 @@ void NodeTranslator::compileStruct(Declaration::Struct::Reader decl,
 void NodeTranslator::compileInterface(Declaration::Interface::Reader decl,
                                       List<Declaration>::Reader members,
                                       schema::InterfaceNode::Builder builder) {
+  KJ_FAIL_ASSERT("TODO: compile interfaces");
+}
 
+// -------------------------------------------------------------------
+
+static kj::String declNameString(DeclName::Reader name) {
+  kj::String prefix;
+
+  switch (name.getBase().which()) {
+    case DeclName::Base::RELATIVE_NAME:
+      prefix = kj::str(name.getBase().getRelativeName());
+      break;
+    case DeclName::Base::ABSOLUTE_NAME:
+      prefix = kj::str(".", name.getBase().getAbsoluteName());
+      break;
+    case DeclName::Base::IMPORT_NAME:
+      prefix = kj::str("import \"", name.getBase().getImportName(), "\"");
+      break;
+  }
+
+  if (name.getMemberPath().size() == 0) {
+    return prefix;
+  } else {
+    auto path = name.getMemberPath();
+    KJ_STACK_ARRAY(kj::StringPtr, parts, path.size(), 16, 16);
+    for (size_t i = 0; i < parts.size(); i++) {
+      parts[i] = path[i].getValue();
+    }
+    return kj::str(prefix, ".", kj::strArray(parts, "."));
+  }
+}
+
+bool NodeTranslator::compileType(TypeExpression::Reader source, schema::Type::Builder target) {
+  auto name = source.getName();
+  KJ_IF_MAYBE(base, resolver.resolve(name)) {
+    bool handledParams = false;
+
+    switch (base->kind) {
+      case Declaration::Body::ENUM_DECL: target.getBody().setEnumType(base->id); break;
+      case Declaration::Body::STRUCT_DECL: target.getBody().setStructType(base->id); break;
+      case Declaration::Body::INTERFACE_DECL: target.getBody().setInterfaceType(base->id); break;
+
+      case Declaration::Body::BUILTIN_LIST: {
+        auto params = source.getParams();
+        if (params.size() != 1) {
+          errorReporter.addErrorOn(source, "'List' requires exactly one parameter.");
+          return false;
+        }
+
+        auto elementType = target.getBody().initListType();
+        if (!compileType(params[0], elementType)) {
+          return false;
+        }
+
+        if (elementType.getBody().which() == schema::Type::Body::OBJECT_TYPE) {
+          errorReporter.addErrorOn(source, "'List(Object)' is not supported.");
+          // Seeing List(Object) later can mess things up, so change the type to Void.
+          elementType.getBody().setVoidType();
+          return false;
+        }
+
+        handledParams = true;
+        break;
+      }
+
+      case Declaration::Body::BUILTIN_VOID: target.getBody().setVoidType(); break;
+      case Declaration::Body::BUILTIN_BOOL: target.getBody().setBoolType(); break;
+      case Declaration::Body::BUILTIN_INT8: target.getBody().setInt8Type(); break;
+      case Declaration::Body::BUILTIN_INT16: target.getBody().setInt16Type(); break;
+      case Declaration::Body::BUILTIN_INT32: target.getBody().setInt32Type(); break;
+      case Declaration::Body::BUILTIN_INT64: target.getBody().setInt64Type(); break;
+      case Declaration::Body::BUILTIN_U_INT8: target.getBody().setUint8Type(); break;
+      case Declaration::Body::BUILTIN_U_INT16: target.getBody().setUint16Type(); break;
+      case Declaration::Body::BUILTIN_U_INT32: target.getBody().setUint32Type(); break;
+      case Declaration::Body::BUILTIN_U_INT64: target.getBody().setUint64Type(); break;
+      case Declaration::Body::BUILTIN_FLOAT32: target.getBody().setFloat32Type(); break;
+      case Declaration::Body::BUILTIN_FLOAT64: target.getBody().setFloat64Type(); break;
+      case Declaration::Body::BUILTIN_TEXT: target.getBody().setTextType(); break;
+      case Declaration::Body::BUILTIN_DATA: target.getBody().setDataType(); break;
+      case Declaration::Body::BUILTIN_OBJECT: target.getBody().setObjectType(); break;
+
+      default:
+        errorReporter.addErrorOn(source, kj::str("'", declNameString(name), "' is not a type."));
+        return false;
+    }
+
+    if (!handledParams) {
+      if (source.getParams().size() != 0) {
+        errorReporter.addErrorOn(source, kj::str(
+            "'", declNameString(name), "' does not accept parameters."));
+      }
+      return false;
+    }
+
+    return true;
+
+  } else {
+    return false;
+  }
+}
+
+// -------------------------------------------------------------------
+
+void NodeTranslator::compileDefaultDefaultValue(
+    schema::Type::Reader type, schema::Value::Builder target) {
+  switch (type.getBody().which()) {
+    case schema::Type::Body::VOID_TYPE: target.getBody().setVoidValue(); break;
+    case schema::Type::Body::BOOL_TYPE: target.getBody().setBoolValue(false); break;
+    case schema::Type::Body::INT8_TYPE: target.getBody().setInt8Value(0); break;
+    case schema::Type::Body::INT16_TYPE: target.getBody().setInt16Value(0); break;
+    case schema::Type::Body::INT32_TYPE: target.getBody().setInt32Value(0); break;
+    case schema::Type::Body::INT64_TYPE: target.getBody().setInt64Value(0); break;
+    case schema::Type::Body::UINT8_TYPE: target.getBody().setUint8Value(0); break;
+    case schema::Type::Body::UINT16_TYPE: target.getBody().setUint16Value(0); break;
+    case schema::Type::Body::UINT32_TYPE: target.getBody().setUint32Value(0); break;
+    case schema::Type::Body::UINT64_TYPE: target.getBody().setUint64Value(0); break;
+    case schema::Type::Body::FLOAT32_TYPE: target.getBody().setFloat32Value(0); break;
+    case schema::Type::Body::FLOAT64_TYPE: target.getBody().setFloat64Value(0); break;
+    case schema::Type::Body::TEXT_TYPE: target.getBody().initTextValue(0); break;
+    case schema::Type::Body::DATA_TYPE: target.getBody().initDataValue(0); break;
+    case schema::Type::Body::ENUM_TYPE: target.getBody().setEnumValue(0); break;
+    case schema::Type::Body::INTERFACE_TYPE: target.getBody().setInterfaceValue(); break;
+
+    // Bit of a hack:  For "Object" types, we adopt a null orphan, which sets the field to null.
+    // TODO(cleanup):  Create a cleaner way to do this.
+    case schema::Type::Body::STRUCT_TYPE: target.getBody().adoptStructValue(Orphan<Data>()); break;
+    case schema::Type::Body::LIST_TYPE: target.getBody().adoptListValue(Orphan<Data>()); break;
+    case schema::Type::Body::OBJECT_TYPE: target.getBody().adoptObjectValue(Orphan<Data>()); break;
+  }
+}
+
+class NodeTranslator::DynamicSlot {
+public:
+  DynamicSlot(DynamicStruct::Builder structBuilder, StructSchema::Member member)
+      : type(FIELD), structBuilder(structBuilder), member(member) {}
+  DynamicSlot(DynamicList::Builder listBuilder, uint index)
+      : type(ELEMENT), listBuilder(listBuilder), index(index) {}
+  DynamicSlot(DynamicStruct::Builder structBuilder, StructSchema::Member member,
+              StructSchema structMemberSchema)
+      : type(STRUCT_OBJECT_FIELD), structBuilder(structBuilder), member(member),
+        structMemberSchema(structMemberSchema) {}
+  DynamicSlot(DynamicStruct::Builder structBuilder, StructSchema::Member member,
+              ListSchema listMemberSchema)
+      : type(LIST_OBJECT_FIELD), structBuilder(structBuilder), member(member),
+        listMemberSchema(listMemberSchema) {}
+  DynamicSlot(DynamicUnion::Builder unionBuilder, StructSchema::Member unionMember)
+      : type(UNION_MEMBER), unionBuilder(unionBuilder), unionMember(unionMember) {}
+
+  bool wasSet = false;
+
+  DynamicStruct::Builder initStruct() {
+    wasSet = true;
+    switch (type) {
+      case FIELD: return structBuilder.init(member).as<DynamicStruct>();
+      case ELEMENT: return listBuilder[index].as<DynamicStruct>();
+      case STRUCT_OBJECT_FIELD: return structBuilder.initObject(member, structMemberSchema);
+      case LIST_OBJECT_FIELD: KJ_FAIL_REQUIRE("Value type mismatch.");
+      case UNION_MEMBER: return unionBuilder.init(unionMember).as<DynamicStruct>();
+    }
+    KJ_FAIL_ASSERT("can't get here");
+  }
+
+  DynamicList::Builder initList(uint size) {
+    wasSet = true;
+    switch (type) {
+      case FIELD: return structBuilder.init(member, size).as<DynamicList>();
+      case ELEMENT: return listBuilder.init(index, size).as<DynamicList>();
+      case STRUCT_OBJECT_FIELD: KJ_FAIL_REQUIRE("Value type mismatch.");
+      case LIST_OBJECT_FIELD: return structBuilder.initObject(member, listMemberSchema, size);
+      case UNION_MEMBER: return unionBuilder.init(unionMember, size).as<DynamicList>();
+    }
+    KJ_FAIL_ASSERT("can't get here");
+  }
+
+  DynamicUnion::Builder getUnion() {
+    wasSet = true;
+    switch (type) {
+      case FIELD: return structBuilder.get(member).as<DynamicUnion>();
+      case ELEMENT: KJ_FAIL_REQUIRE("Value type mismatch.");
+      case STRUCT_OBJECT_FIELD: KJ_FAIL_REQUIRE("Value type mismatch.");
+      case LIST_OBJECT_FIELD: KJ_FAIL_REQUIRE("Value type mismatch.");
+      case UNION_MEMBER: return unionBuilder.init(unionMember).as<DynamicUnion>();
+    }
+    KJ_FAIL_ASSERT("can't get here");
+  }
+
+  void set(DynamicValue::Reader value) {
+    wasSet = true;
+    switch (type) {
+      case FIELD: return structBuilder.set(member, value);
+      case ELEMENT: return listBuilder.set(index, value);
+      case STRUCT_OBJECT_FIELD: return structBuilder.set(member, value);
+      case LIST_OBJECT_FIELD: return structBuilder.set(member, value);
+      case UNION_MEMBER: return unionBuilder.set(unionMember, value);
+    }
+    KJ_FAIL_ASSERT("can't get here");
+  }
+
+  kj::Maybe<uint64_t> getEnumType() {
+    // If the member is an enum, get its type ID.  Otherwise return nullptr.
+    //
+    // This is really ugly.
+
+    switch (type) {
+      case FIELD: return enumIdForMember(member);
+      case ELEMENT: {
+        if (listBuilder.getSchema().whichElementType() == schema::Type::Body::ENUM_TYPE) {
+          return listBuilder.getSchema().getEnumElementType().getProto().getId();
+        }
+        return nullptr;
+      }
+      case STRUCT_OBJECT_FIELD: return nullptr;
+      case LIST_OBJECT_FIELD: return nullptr;
+      case UNION_MEMBER: return enumIdForMember(unionMember);
+    }
+    KJ_FAIL_ASSERT("can't get here");
+  }
+
+private:
+  enum Type {
+    FIELD, ELEMENT, STRUCT_OBJECT_FIELD, LIST_OBJECT_FIELD, UNION_MEMBER
+  };
+  Type type;
+
+  union {
+    struct {
+      DynamicStruct::Builder structBuilder;
+      StructSchema::Member member;
+      union {
+        StructSchema structMemberSchema;
+        ListSchema listMemberSchema;
+      };
+    };
+    struct {
+      DynamicList::Builder listBuilder;
+      uint index;
+    };
+    struct {
+      DynamicUnion::Builder unionBuilder;
+      StructSchema::Member unionMember;
+    };
+  };
+
+  static kj::Maybe<uint64_t> enumIdForMember(StructSchema::Member member) {
+    auto body = member.getProto().getBody();
+    if (body.which() == schema::StructNode::Member::Body::FIELD_MEMBER) {
+      auto typeBody = body.getFieldMember().getType().getBody();
+      if (typeBody.which() == schema::Type::Body::ENUM_TYPE) {
+        return typeBody.getEnumType();
+      }
+    }
+    return nullptr;
+  }
+};
+
+static kj::StringPtr getValueUnionMemberNameFor(schema::Type::Body::Which type) {
+  switch (type) {
+    case schema::Type::Body::VOID_TYPE: return "voidValue";
+    case schema::Type::Body::BOOL_TYPE: return "boolValue";
+    case schema::Type::Body::INT8_TYPE: return "int8Value";
+    case schema::Type::Body::INT16_TYPE: return "int16Value";
+    case schema::Type::Body::INT32_TYPE: return "int32Value";
+    case schema::Type::Body::INT64_TYPE: return "int64Value";
+    case schema::Type::Body::UINT8_TYPE: return "uint8Value";
+    case schema::Type::Body::UINT16_TYPE: return "uint16Value";
+    case schema::Type::Body::UINT32_TYPE: return "uint32Value";
+    case schema::Type::Body::UINT64_TYPE: return "uint64Value";
+    case schema::Type::Body::FLOAT32_TYPE: return "float32Value";
+    case schema::Type::Body::FLOAT64_TYPE: return "float64Value";
+    case schema::Type::Body::TEXT_TYPE: return "textValue";
+    case schema::Type::Body::DATA_TYPE: return "dataValue";
+    case schema::Type::Body::LIST_TYPE: return "listValue";
+    case schema::Type::Body::ENUM_TYPE: return "enumValue";
+    case schema::Type::Body::STRUCT_TYPE: return "structValue";
+    case schema::Type::Body::INTERFACE_TYPE: return "interfaceValue";
+    case schema::Type::Body::OBJECT_TYPE: return "objectValue";
+  }
+  KJ_FAIL_ASSERT("Unknown type.");
 }
 
 void NodeTranslator::compileBootstrapValue(ValueExpression::Reader source,
                                            schema::Type::Reader type,
                                            schema::Value::Builder target) {
+  switch (type.getBody().which()) {
+    case schema::Type::Body::LIST_TYPE:
+    case schema::Type::Body::STRUCT_TYPE:
+    case schema::Type::Body::INTERFACE_TYPE:
+    case schema::Type::Body::OBJECT_TYPE:
+      unfinishedValues.add(UnfinishedValue { source, type, target });
+      break;
 
+    default:
+      // Primitive value.
+      compileValue(source, type, target, true);
+      break;
+  }
 }
 
-void NodeTranslator::compileFinalValue(ValueExpression::Reader source,
-                                       schema::Type::Reader type, schema::Value::Builder target) {
+void NodeTranslator::compileValue(ValueExpression::Reader source, schema::Type::Reader type,
+                                  schema::Value::Builder target, bool isBootstrap) {
+  auto valueUnion = toDynamic(target).get("body").as<DynamicUnion>();
+  auto member = valueUnion.getSchema().getMemberByName(
+      getValueUnionMemberNameFor(type.getBody().which()));
+  DynamicSlot slot(valueUnion, member);
+  compileValue(source, slot, isBootstrap);
+  if (!slot.wasSet) {
+    // An error should have been reported already.  Initialize to a reasonable default.
+    compileDefaultDefaultValue(type, target);
+  }
+}
 
+void NodeTranslator::compileValue(ValueExpression::Reader src, DynamicSlot& dst, bool isBootstrap) {
+  // We rely on the dynamic API to detect type errors and throw exceptions.
+  //
+  // TODO(cleanup):  We should perhaps ensure that all exceptions that this might throw are
+  //   recoverable, so that this doesn't crash if -fno-exceptions is enabled.  Or create a better
+  //   way to test for type compatibility without throwing.
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions(
+      [&]() { compileValueInner(src, dst, isBootstrap); })) {
+    errorReporter.addErrorOn(src, exception->getDescription());
+    dst.wasSet = false;
+  }
+}
+
+void NodeTranslator::compileValueInner(
+    ValueExpression::Reader src, DynamicSlot& dst, bool isBootstrap) {
+  switch (src.getBody().which()) {
+    case ValueExpression::Body::NAME: {
+      auto name = src.getBody().getName();
+      bool isBare = name.getBase().which() == DeclName::Base::RELATIVE_NAME &&
+                    name.getMemberPath().size() == 0;
+      if (isBare) {
+        // The name is just a bare identifier.  It may be a literal value or an enumerant.
+        kj::StringPtr id = name.getBase().getRelativeName().getValue();
+
+        KJ_IF_MAYBE(enumId, dst.getEnumType()) {
+          auto enumSchema = resolver.resolveMaybeBootstrapSchema(*enumId).asEnum();
+          KJ_IF_MAYBE(enumerant, enumSchema.findEnumerantByName(id)) {
+            dst.set(DynamicEnum(*enumerant));
+          }
+        } else {
+          // Interpret known constant values.
+          if (id == "void") {
+            dst.set(Void::VOID);
+          } else if (id == "true") {
+            dst.set(true);
+          } else if (id == "false") {
+            dst.set(false);
+          } else if (id == "nan") {
+            dst.set(std::numeric_limits<double>::quiet_NaN());
+          } else if (id == "inf") {
+            dst.set(std::numeric_limits<double>::infinity());
+          }
+        }
+      }
+
+      if (!dst.wasSet) {
+        // Haven't resolved the name yet.  Try looking up a constant.
+        KJ_IF_MAYBE(constValue, readConstant(src.getBody().getName(), isBootstrap, src)) {
+          dst.set(*constValue);
+        }
+      }
+      break;
+    }
+
+    case ValueExpression::Body::POSITIVE_INT:
+      dst.set(src.getBody().getPositiveInt());
+      break;
+
+    case ValueExpression::Body::NEGATIVE_INT: {
+      uint64_t nValue = src.getBody().getNegativeInt();
+      if (nValue > (std::numeric_limits<uint64_t>::max() >> 1) + 1) {
+        errorReporter.addErrorOn(src, "Integer is too big to be negative.");
+      } else {
+        dst.set(kj::implicitCast<int64_t>(-nValue));
+      }
+      break;
+    }
+
+    case ValueExpression::Body::FLOAT:
+      dst.set(src.getBody().getFloat());
+      break;
+
+    case ValueExpression::Body::STRING:
+      dst.set(src.getBody().getString());
+      break;
+
+    case ValueExpression::Body::LIST: {
+      auto srcList = src.getBody().getList();
+      auto dstList = dst.initList(srcList.size());
+      for (uint i = 0; i < srcList.size(); i++) {
+        DynamicSlot slot(dstList, i);
+        compileValue(srcList[i], slot, isBootstrap);
+      }
+      break;
+    }
+
+    case ValueExpression::Body::STRUCT_VALUE: {
+      auto srcStruct = src.getBody().getStructValue();
+      auto dstStruct = dst.initStruct();
+      auto dstSchema = dstStruct.getSchema();
+      for (auto assignment: srcStruct) {
+        auto fieldName = assignment.getFieldName();
+        KJ_IF_MAYBE(member, dstSchema.findMemberByName(fieldName.getValue())) {
+          DynamicSlot slot(dstStruct, *member);
+          compileValue(assignment.getValue(), slot, isBootstrap);
+        } else {
+          errorReporter.addErrorOn(fieldName, kj::str(
+              "Value has no field named '", fieldName.getValue(), "'."));
+        }
+      }
+      break;
+    }
+    case ValueExpression::Body::UNION_VALUE: {
+      auto srcUnion = src.getBody().getUnionValue();
+      auto dstUnion = dst.getUnion();
+
+      auto fieldName = srcUnion.getFieldName();
+      KJ_IF_MAYBE(member, dstUnion.getSchema().findMemberByName(fieldName.getValue())) {
+        DynamicSlot slot(dstUnion, *member);
+        compileValue(srcUnion.getValue(), slot, isBootstrap);
+      } else {
+        errorReporter.addErrorOn(fieldName, kj::str(
+            "Union has no field named '", fieldName.getValue(), "'."));
+      }
+      break;
+    }
+
+    case ValueExpression::Body::UNKNOWN:
+      // Ignore earlier error.
+      break;
+  }
+}
+
+void NodeTranslator::copyValue(schema::Value::Reader src, schema::Type::Reader srcType,
+                               schema::Value::Builder dst, schema::Type::Reader dstType,
+                               ValueExpression::Reader errorLocation) {
+  DynamicUnion::Reader srcBody = DynamicStruct::Reader(src).get("body").as<DynamicUnion>();
+  DynamicUnion::Builder dstBody = DynamicStruct::Builder(dst).get("body").as<DynamicUnion>();
+
+  kj::StringPtr dstFieldName = getValueUnionMemberNameFor(dstType.getBody().which());
+
+  KJ_IF_MAYBE(which, srcBody.which()) {
+    // Setting a value via the dynamic API implements the implicit conversions that we want, with
+    // bounds checking that we want.  It throws an exception on failure, but that exception is a
+    // recoverable one, so even if exceptions are disabled, we should be able to catch it.  So,
+    // let's do that rather than try to re-implement all that logic here.
+    KJ_IF_MAYBE(exception, kj::runCatchingExceptions(
+        [&]() { dstBody.set(dstFieldName, srcBody.get()); })) {
+      // Exception caught, therefore the types are not compatible.
+      errorReporter.addErrorOn(errorLocation, exception->getDescription());
+    }
+  } else {
+    KJ_FAIL_ASSERT("Didn't recognize schema::Value::Body type?");
+  }
+}
+
+kj::Maybe<DynamicValue::Reader> NodeTranslator::readConstant(
+    DeclName::Reader name, bool isBootstrap, ValueExpression::Reader errorLocation) {
+  KJ_IF_MAYBE(resolved, resolver.resolve(name)) {
+    if (resolved->kind != Declaration::Body::CONST_DECL) {
+      errorReporter.addErrorOn(errorLocation,
+          kj::str("'", declNameString(name), "' does not refer to a constant."));
+      return nullptr;
+    }
+
+    // If we're bootstrapping, then we know we're expecting a primitive value, so if the
+    // constant turns out to be non-primitive, we'll error out anyway.  If we're not
+    // bootstrapping, we may be compiling a non-primitive value and so we need the final
+    // version of the constant to make sure its value is filled in.
+    //
+    // We need to be very careful not to query this Schema's dependencies because if it is
+    // a final schema then this query could trigger a lazy load which would deadlock.
+    Schema constSchema = isBootstrap ?
+        resolver.resolveMaybeBootstrapSchema(resolved->id) :
+        resolver.resolveFinalSchema(resolved->id);
+    auto constReader = constSchema.getProto().getBody().getConstNode();
+    auto constValue = toDynamic(constReader.getValue()).get("body").as<DynamicUnion>().get();
+
+    if (constValue.getType() == DynamicValue::OBJECT) {
+      // We need to assign an appropriate schema to this object.
+      DynamicObject objValue = constValue.as<DynamicObject>();
+      auto constType = constReader.getType();
+      switch (constType.getBody().which()) {
+        case schema::Type::Body::STRUCT_TYPE:
+          constValue = objValue.as(resolver.resolveMaybeBootstrapSchema(
+              constType.getBody().getStructType()).asStruct());
+          break;
+        case schema::Type::Body::LIST_TYPE:
+          constValue = objValue.as(makeListSchemaOf(constType.getBody().getListType()));
+          break;
+        case schema::Type::Body::OBJECT_TYPE:
+          // Fine as-is.
+          break;
+        default:
+          KJ_FAIL_ASSERT("Unrecognized Object-typed member of schema::Value::body.");
+          break;
+      }
+    }
+
+    if (name.getBase().which() == DeclName::Base::RELATIVE_NAME &&
+        name.getMemberPath().size() == 0) {
+      // A fully unqualified identifier looks like it might refer to a constant visible in the
+      // current scope, but if that's really what the user wanted, we want them to use a
+      // qualified name to make it more obvious.  Report an error.
+      Schema scope = resolver.resolveMaybeBootstrapSchema(constSchema.getProto().getScopeId());
+      auto scopeReader = scope.getProto();
+      kj::StringPtr parent;
+      if (scopeReader.getBody().which() == schema::Node::Body::FILE_NODE) {
+        parent = "";
+      } else {
+        parent = scopeReader.getDisplayName().slice(scopeReader.getDisplayNamePrefixLength());
+      }
+      kj::StringPtr id = name.getBase().getRelativeName().getValue();
+
+      errorReporter.addErrorOn(errorLocation, kj::str(
+          "Constant names must be qualified to avoid confusion.  Please replace '",
+          declNameString(name), "' with '", parent, ".", id,
+          "', if that's what you intended."));
+    }
+
+    return constValue;
+  } else {
+    return nullptr;
+  }
+}
+
+ListSchema NodeTranslator::makeListSchemaOf(schema::Type::Reader elementType) {
+  auto body = elementType.getBody();
+  switch (body.which()) {
+    case schema::Type::Body::ENUM_TYPE:
+      return ListSchema::of(resolver.resolveMaybeBootstrapSchema(body.getEnumType()).asEnum());
+    case schema::Type::Body::STRUCT_TYPE:
+      return ListSchema::of(resolver.resolveMaybeBootstrapSchema(body.getStructType()).asStruct());
+    case schema::Type::Body::INTERFACE_TYPE:
+      return ListSchema::of(resolver.resolveMaybeBootstrapSchema(body.getInterfaceType())
+                            .asInterface());
+    case schema::Type::Body::LIST_TYPE:
+      return ListSchema::of(makeListSchemaOf(body.getListType()));
+    default:
+      return ListSchema::of(body.which());
+  }
 }
 
 Orphan<List<schema::Annotation>> NodeTranslator::compileAnnotationApplications(
     List<Declaration::AnnotationApplication>::Reader annotations,
     kj::StringPtr targetsFlagName) {
+  if (annotations.size() == 0) {
+    // Return null.
+    return Orphan<List<schema::Annotation>>();
+  }
 
+  Orphanage orphanage = Orphanage::getForMessageContaining(wipNode.get());
+  auto result = orphanage.newOrphan<List<schema::Annotation>>(annotations.size());
+  auto builder = result.get();
+
+  for (uint i = 0; i < annotations.size(); i++) {
+    Declaration::AnnotationApplication::Reader annotation = annotations[i];
+    schema::Annotation::Builder annotationBuilder = builder[i];
+    auto name = annotation.getName();
+    KJ_IF_MAYBE(decl, resolver.resolve(name)) {
+      if (decl->kind != Declaration::Body::ANNOTATION_DECL) {
+        errorReporter.addErrorOn(name, kj::str(
+            "'", declNameString(name), "' is not an annotation."));
+      } else {
+        annotationBuilder.setId(decl->id);
+        auto node = resolver.resolveMaybeBootstrapSchema(decl->id).getProto()
+            .getBody().getAnnotationNode();
+        if (!toDynamic(node).get(targetsFlagName).as<bool>()) {
+          errorReporter.addErrorOn(name, kj::str(
+              "'", declNameString(name), "' cannot be applied to this kind of declaration."));
+        }
+
+        // Interpret the value.
+        auto value = annotation.getValue();
+        switch (value.which()) {
+          case Declaration::AnnotationApplication::Value::NONE:
+            // No value, i.e. void.
+            if (node.getType().getBody().which() == schema::Type::Body::VOID_TYPE) {
+              annotationBuilder.initValue().getBody().setVoidValue();
+            } else {
+              errorReporter.addErrorOn(name, kj::str(
+                  "'", declNameString(name), "' requires a value."));
+              compileDefaultDefaultValue(node.getType(), annotationBuilder.initValue());
+            }
+            break;
+
+          case Declaration::AnnotationApplication::Value::EXPRESSION:
+            compileBootstrapValue(value.getExpression(), node.getType(),
+                                  annotationBuilder.initValue());
+            break;
+        }
+
+      }
+    }
+  }
+
+  return result;
 }
 
 }  // namespace compiler
