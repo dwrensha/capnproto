@@ -32,7 +32,8 @@
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <stdlib.h>
-#include <semaphore.h>
+#include <sys/sem.h>
+#include <fcntl.h>
 #include <algorithm>
 #include <stdexcept>
 #include <stdio.h>
@@ -87,7 +88,16 @@ public:
   ProducerConsumerQueue() {
     front = new Node;
     back = front;
-    sem_init(&semaphore, 0, 0);
+    semaphore = semget(IPC_PRIVATE, 1, IPC_CREAT | S_IRUSR | S_IWUSR );
+    if (semaphore == -1) {
+      perror("semget");
+    }
+    op_post.sem_num = 0;
+    op_next.sem_num = 0;
+    op_post.sem_op = 1;
+    op_next.sem_op = -1;
+    op_post.sem_flg = 0;
+    op_next.sem_flg = 0;
   }
 
   ~ProducerConsumerQueue() noexcept(false) {
@@ -96,17 +106,16 @@ public:
       front = front->next;
       delete oldFront;
     }
-    sem_destroy(&semaphore);
   }
 
   void post(T t) {
     back->next = new Node(t);
     back = back->next;
-    sem_post(&semaphore);
+    semop(semaphore, &op_post, 1);
   }
 
   T next() {
-    sem_wait(&semaphore);
+    semop(semaphore, &op_next, 1);
     Node* oldFront = front;
     front = front->next;
     delete oldFront;
@@ -124,7 +133,9 @@ private:
 
   Node* front;  // Last node that has been consumed.
   Node* back;   // Last node in list.
-  sem_t semaphore;
+  int semaphore;
+  sembuf op_post;
+  sembuf op_next;
 };
 
 // TODO(cleanup):  Use SYSCALL(), get rid of this exception class.
