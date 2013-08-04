@@ -55,7 +55,7 @@ class Compiler {
   // Cross-links separate modules (schema files) and translates them into schema nodes.
 
 public:
-  explicit Compiler();
+  Compiler();
   ~Compiler();
   KJ_DISALLOW_COPY(Compiler);
 
@@ -76,12 +76,29 @@ public:
     // use EAGER mode.
   };
 
-  Schema add(Module& module, Mode mode) const;
-  // Add a module to the Compiler, returning its root Schema object.
+  uint64_t add(const Module& module, Mode mode) const;
+  // Add a module to the Compiler, returning the module's file ID.  The ID can then be used to
+  // look up the schema in the SchemaLoader returned by `getLoader()`.  However, if there were any
+  // errors while compiling (reported via `module.addError()`), then the SchemaLoader may behave as
+  // if the node doesn't exist, or may return an invalid partial Schema.
+
+  kj::Maybe<uint64_t> lookup(uint64_t parent, kj::StringPtr childName) const;
+  // Given the type ID of a schema node, find the ID of a node nested within it, without actually
+  // building either node.  Throws an exception if the parent ID is not recognized; returns null
+  // if the parent has no child of the given name.
 
   const SchemaLoader& getLoader() const;
   // Get a SchemaLoader backed by this compiler.  Schema nodes will be lazily constructed as you
   // traverse them using this loader.
+
+  void clearWorkspace();
+  // The compiler builds a lot of temporary tables and data structures while it works.  It's
+  // useful to keep these around if more work is expected (especially if you are using lazy
+  // compilation and plan to look up Schema nodes that haven't already been seen), but once
+  // the SchemaLoader has everything you need, you can call clearWorkspace() to free up the
+  // temporary space.  Note that it's safe to call clearWorkspace() even if you do expect to
+  // compile more nodes in the future; it may simply lead to redundant work if the discarded
+  // structures are needed again.
 
 private:
   class Impl;

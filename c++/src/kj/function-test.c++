@@ -21,30 +21,63 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "common.h"
-#include "debug.h"
-#include <stdlib.h>
+#include "function.h"
+#include <gtest/gtest.h>
 
 namespace kj {
-namespace _ {  // private
+namespace {
 
-void inlineRequireFailure(const char* file, int line, const char* expectation,
-                          const char* macroArgs, const char* message) {
-  if (message == nullptr) {
-    Debug::Fault f(file, line, Exception::Nature::PRECONDITION, 0, expectation, macroArgs);
-    f.fatal();
-  } else {
-    Debug::Fault f(file, line, Exception::Nature::PRECONDITION, 0, expectation, macroArgs, message);
-    f.fatal();
+TEST(Function, Lambda) {
+  int i = 0;
+
+  Function<int(int, int)> f = [&](int a, int b) { return a + b + i++; };
+
+  EXPECT_EQ(123 + 456, f(123, 456));
+  EXPECT_EQ(7 + 8 + 1, f(7, 8));
+  EXPECT_EQ(9 + 2 + 2, f(2, 9));
+
+  EXPECT_EQ(i, 3);
+}
+
+struct TestType {
+  int callCount;
+
+  TestType(int callCount = 0): callCount(callCount) {}
+
+  ~TestType() { callCount = 1234; }
+  // Make sure we catch invalid post-destruction uses.
+
+  int foo(int a, int b) {
+    return a + b + callCount++;
   }
+};
+
+TEST(Function, Method) {
+  TestType obj;
+  Function<int(int, int)> f = KJ_BIND_METHOD(obj, foo);
+  Function<uint(uint, uint)> f2 = KJ_BIND_METHOD(obj, foo);
+
+  EXPECT_EQ(123 + 456, f(123, 456));
+  EXPECT_EQ(7 + 8 + 1, f(7, 8));
+  EXPECT_EQ(9u + 2u + 2u, f2(2, 9));
+
+  EXPECT_EQ(3, obj.callCount);
+
+  // Bind to a temporary.
+  f = KJ_BIND_METHOD(TestType(10), foo);
+
+  EXPECT_EQ(123 + 456 + 10, f(123, 456));
+  EXPECT_EQ(7 + 8 + 11, f(7, 8));
+  EXPECT_EQ(9 + 2 + 12, f(2, 9));
+
+  // Bind to a move.
+  f = KJ_BIND_METHOD(kj::mv(obj), foo);
+  obj.callCount = 1234;
+
+  EXPECT_EQ(123 + 456 + 3, f(123, 456));
+  EXPECT_EQ(7 + 8 + 4, f(7, 8));
+  EXPECT_EQ(9 + 2 + 5, f(2, 9));
 }
 
-void unreachable() {
-  KJ_FAIL_ASSERT("Supposendly-unreachable branch executed.");
-
-  // Really make sure we abort.
-  abort();
-}
-
-}  // namespace _ (private)
-}  // namespace kj
+} // namespace
+} // namespace kj

@@ -24,7 +24,7 @@
 // This program is a code generator plugin for capnpc which writes the schema back to stdout in
 // roughly capnpc format.
 
-#include "../schema.capnp.h"
+#include <capnp/schema.capnp.h>
 #include "../serialize.h"
 #include <kj/debug.h>
 #include <kj/io.h>
@@ -453,8 +453,8 @@ TextBlob genStructMember(schema::StructNode::Member::Reader member,
       int i = 0;
       return text(indent, member.getName(), " @", member.getOrdinal(),
                   " union", genAnnotations(member.getAnnotations(), scope),
-                  " {  # tag bits[", un.getDiscriminantOffset(), ", ",
-                  un.getDiscriminantOffset() + 16, ")\n",
+                  " {  # tag bits[", un.getDiscriminantOffset() * 16, ", ",
+                  un.getDiscriminantOffset() * 16 + 16, ")\n",
                   FOR_EACH(un.getMembers(), member) {
                     return genStructMember(member, scope, indent.next(), i++);
                   },

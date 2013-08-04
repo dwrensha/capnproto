@@ -68,8 +68,8 @@ public:
   Node(kj::StringPtr name, Declaration::Body::Which kind);
   // Create a dummy node representing a built-in declaration, like "Int32" or "true".
 
-  uint64_t getId() { return id; }
-  Declaration::Body::Which getKind() { return kind; }
+  uint64_t getId() const { return id; }
+  Declaration::Body::Which getKind() const { return kind; }
 
   kj::Maybe<const Node&> lookupMember(kj::StringPtr name) const;
   // Find a direct member of this node with the given name.
@@ -81,16 +81,20 @@ public:
   kj::Maybe<const Node&> lookup(const DeclName::Reader& name) const;
   // Resolve an arbitrary DeclName to a Node.
 
-  Schema getBootstrapOrFinalSchema() const;
-  Schema getFinalSchema() const;
+  kj::Maybe<Schema> getBootstrapSchema() const;
+  kj::Maybe<schema::Node::Reader> getFinalSchema() const;
+
+  void traverse(Compiler::Mode mode) const;
+  // Get the final schema for this node, and also possibly traverse the node's children and
+  // dependencies to ensure that they are loaded, depending on the mode.
 
   void addError(kj::StringPtr error) const;
   // Report an error on this Node.
 
   // implements NodeTranslator::Resolver -----------------------------
   kj::Maybe<ResolvedName> resolve(const DeclName::Reader& name) const override;
-  Schema resolveMaybeBootstrapSchema(uint64_t id) const override;
-  Schema resolveFinalSchema(uint64_t id) const override;
+  kj::Maybe<Schema> resolveBootstrapSchema(uint64_t id) const override;
+  kj::Maybe<schema::Node::Reader> resolveFinalSchema(uint64_t id) const override;
 
 private:
   const CompiledModule* module;  // null iff isBuiltin is true
@@ -141,6 +145,7 @@ private:
 
     typedef std::multimap<kj::StringPtr, kj::Own<Node>> NestedNodesMap;
     NestedNodesMap nestedNodes;
+    kj::Vector<Node*> orderedNestedNodes;
     // Filled in when lookupMember() is first called.  multimap in case of duplicate member names --
     // we still want to compile them, even if it's an error.
 
@@ -153,13 +158,14 @@ private:
     NodeTranslator* translator;
     // Node translator, allocated in the bootstrap arena.
 
-    Schema bootstrapSchema;
-    // The schema built in the bootstrap loader.
+    kj::Maybe<Schema> bootstrapSchema;
+    // The schema built in the bootstrap loader.  Null if the bootstrap loader threw an exception.
 
     // FINISHED ------------------------------------
 
-    Schema finalSchema;
-    // The complete schema as loaded by the compiler's main SchemaLoader.
+    kj::Maybe<Schema> finalSchema;
+    // The complete schema as loaded by the compiler's main SchemaLoader.  Null if the final
+    // loader threw an exception.
   };
 
   kj::MutexGuarded<Content> content;
@@ -188,7 +194,7 @@ public:
   const Compiler::Impl& getCompiler() const { return compiler; }
 
   const ErrorReporter& getErrorReporter() const { return parserModule; }
-  const ParsedFile::Reader& getParsedFile() const { return content; }
+  ParsedFile::Reader getParsedFile() const { return content.getReader(); }
   const Node& getRootNode() const { return rootNode; }
   kj::StringPtr getSourceName() const { return parserModule.getSourceName(); }
 
@@ -198,14 +204,17 @@ private:
   const Compiler::Impl& compiler;
   const Module& parserModule;
   MallocMessageBuilder contentArena;
-  ParsedFile::Reader content;
+  Orphan<ParsedFile> content;
   Node rootNode;
 };
 
 class Compiler::Impl: public SchemaLoader::LazyLoadCallback {
 public:
   Impl();
+  virtual ~Impl();
 
+  uint64_t add(const Module& module, Mode mode) const;
+  kj::Maybe<uint64_t> lookup(uint64_t parent, kj::StringPtr childName) const;
   const CompiledModule& add(const Module& parsedModule) const;
 
   struct Workspace {
@@ -214,11 +223,14 @@ public:
     // compiler.  Note that since nodes are compiled lazily, a new Workspace may have to be
     // constructed in order to compile more nodes later.
 
-    kj::Arena arena;
-    // Arena for allocating temporary native objects.
-
+    MallocMessageBuilder message;
     Orphanage orphanage;
     // Orphanage for allocating temporary Cap'n Proto objects.
+
+    kj::Arena arena;
+    // Arena for allocating temporary native objects.  Note that objects in `arena` may contain
+    // pointers into `message` that will be manipulated on destruction, so `arena` must be declared
+    // after `message`.
 
     SchemaLoader bootstrapLoader;
     // Loader used to load bootstrap schemas.  The bootstrap schema nodes are similar to the final
@@ -226,6 +238,10 @@ public:
     // default values for struct fields) are left unevaluated (the values in the schema are empty).
     // These bootstrap schemas can then be plugged into the dynamic API and used to evaluate these
     // remaining values.
+
+    inline explicit Workspace(const SchemaLoader::LazyLoadCallback& loaderCallback)
+        : orphanage(message.getOrphanage()),
+          bootstrapLoader(loaderCallback) {}
   };
 
   const kj::Arena& getNodeArena() const { return nodeArena; }
@@ -234,8 +250,12 @@ public:
   const SchemaLoader& getFinalLoader() const { return finalLoader; }
   // Schema loader containing final versions of schemas.
 
-  const Workspace& getWorkspace() const { return *workspace.getWithoutLock(); }
-  // Temporary workspace that can be used to construct bootstrap objects.
+  const Workspace& getWorkspace() const { return workspace.getWithoutLock(); }
+  // Temporary workspace that can be used to construct bootstrap objects.  We assume that the
+  // caller already holds the workspace lock somewhere up the stack.
+
+  void clearWorkspace();
+  // Reset the temporary workspace.
 
 
   uint64_t addNode(uint64_t desiredId, Node& node) const;
@@ -256,15 +276,10 @@ private:
   SchemaLoader finalLoader;
   // The loader where we put final output of the compiler.
 
-  kj::MutexGuarded<const Workspace*> workspace;
-  // The entry points to the Compiler allocate a Workspace on the stack, lock this mutex, and set
-  // the pointer to point at said stack workspace.  The rest of the compiler can assume that this
-  // Workspace is active.
+  kj::MutexGuarded<Workspace> workspace;
+  // The temporary workspace.
 
-  uint workspaceRefcount = 0;
-  // Count of threads that have entered the compiler.
-
-  typedef std::unordered_map<Module*, kj::Own<CompiledModule>> ModuleMap;
+  typedef std::unordered_map<const Module*, kj::Own<CompiledModule>> ModuleMap;
   kj::MutexGuarded<ModuleMap> modules;
   // Map of parser modules to compiler modules.
 
@@ -364,7 +379,7 @@ uint64_t Compiler::Node::generateId(uint64_t parentId, kj::StringPtr declName,
     result = (result << 8) | resultBytes[i];
   }
 
-  return result;
+  return result | (1ull << 63);
 }
 
 kj::StringPtr Compiler::Node::joinDisplayName(
@@ -377,7 +392,7 @@ kj::StringPtr Compiler::Node::joinDisplayName(
   result[separatorPos] = parent.parent == nullptr ? ':' : '.';
   memcpy(result.begin() + separatorPos + 1, declName.begin(), declName.size());
   result[result.size() - 1] = '\0';
-  return kj::StringPtr(declName.begin(), declName.size() - 1);
+  return kj::StringPtr(result.begin(), result.size() - 1);
 }
 
 const Compiler::Node::Content& Compiler::Node::getContent(Content::State minimumState) const {
@@ -406,6 +421,7 @@ const Compiler::Node::Content& Compiler::Node::getContent(Content::State minimum
           case Declaration::Body::INTERFACE_DECL: {
             kj::Own<Node> subNode = arena.allocateOwn<Node>(*this, nestedDecl);
             kj::StringPtr name = nestedDecl.getName().getValue();
+            locked->orderedNestedNodes.add(subNode);
             locked->nestedNodes.insert(std::make_pair(name, kj::mv(subNode)));
             break;
           }
@@ -450,23 +466,35 @@ const Compiler::Node::Content& Compiler::Node::getContent(Content::State minimum
         builder.setScopeId(p->id);
       }
 
-      auto nestedIter = builder.initNestedNodes(locked->nestedNodes.size()).begin();
-      for (auto& entry: locked->nestedNodes) {
-        nestedIter->setName(entry.first);
-        nestedIter->setId(entry.second->id);
+      auto nestedNodes = builder.initNestedNodes(locked->orderedNestedNodes.size());
+      auto nestedIter = nestedNodes.begin();
+      for (auto node: locked->orderedNestedNodes) {
+        nestedIter->setName(node->declaration.getName().getValue());
+        nestedIter->setId(node->id);
         ++nestedIter;
       }
 
       locked->translator = &workspace.arena.allocate<NodeTranslator>(
           *this, module->getErrorReporter(), declaration, kj::mv(schemaNode));
-      locked->bootstrapSchema = workspace.bootstrapLoader.loadOnce(
-          locked->translator->getBootstrapNode());
+      KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&](){
+        locked->bootstrapSchema = workspace.bootstrapLoader.loadOnce(
+            locked->translator->getBootstrapNode());
+      })) {
+        locked->bootstrapSchema = nullptr;
+        // Only bother to report validation failures if we think we haven't seen any errors.
+        // Otherwise we assume that the errors caused the validation failure.
+        if (!module->getErrorReporter().hadErrors()) {
+          addError(kj::str("Internal compiler bug: Bootstrap schema failed validation:\n",
+                           *exception));
+        }
+      }
 
       // If the Workspace is destroyed while this Node is still in the BOOTSTRAP state,
       // revert it to the EXPANDED state, because the NodeTranslator is no longer valid in this
       // case.
       Content* contentPtr = locked.get();
       workspace.arena.copy(kj::defer([contentPtr]() {
+        contentPtr->bootstrapSchema = nullptr;
         if (contentPtr->state == Content::BOOTSTRAP) {
           contentPtr->state = Content::EXPANDED;
         }
@@ -480,8 +508,19 @@ const Compiler::Node::Content& Compiler::Node::getContent(Content::State minimum
       if (minimumState <= Content::BOOTSTRAP) break;
 
       // Create the final schema.
-      locked->finalSchema = module->getCompiler().getFinalLoader().loadOnce(
-          locked->translator->finish());
+      KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&](){
+        locked->finalSchema = module->getCompiler().getFinalLoader().loadOnce(
+            locked->translator->finish());
+      })) {
+        locked->finalSchema = nullptr;
+
+        // Only bother to report validation failures if we think we haven't seen any errors.
+        // Otherwise we assume that the errors caused the validation failure.
+        if (!module->getErrorReporter().hadErrors()) {
+          addError(kj::str("Internal compiler bug: Schema failed validation:\n",
+                           *exception));
+        }
+      }
 
       locked->advanceState(Content::FINISHED);
       // no break
@@ -584,17 +623,36 @@ kj::Maybe<const Compiler::Node&> Compiler::Node::lookup(const DeclName::Reader& 
   return *node;
 }
 
-Schema Compiler::Node::getBootstrapOrFinalSchema() const {
+kj::Maybe<Schema> Compiler::Node::getBootstrapSchema() const {
   auto& content = getContent(Content::BOOTSTRAP);
 
-  if (__atomic_load_n(&content.state, __ATOMIC_ACQUIRE) == Content::FINISHED) {
-    return content.finalSchema;
+  if (__atomic_load_n(&content.state, __ATOMIC_ACQUIRE) == Content::FINISHED &&
+      content.bootstrapSchema == nullptr) {
+    // The bootstrap schema was discarded.  Copy it from the final schema.
+    // (We can't just return the final schema because using it could trigger schema loader
+    // callbacks that would deadlock.)
+    KJ_IF_MAYBE(finalSchema, content.finalSchema) {
+      return module->getCompiler().getWorkspace().bootstrapLoader.loadOnce(finalSchema->getProto());
+    } else {
+      return nullptr;
+    }
   } else {
     return content.bootstrapSchema;
   }
 }
-Schema Compiler::Node::getFinalSchema() const {
-  return getContent(Content::FINISHED).finalSchema;
+kj::Maybe<schema::Node::Reader> Compiler::Node::getFinalSchema() const {
+  return getContent(Content::FINISHED).finalSchema.map(
+      [](const Schema& schema) { return schema.getProto(); });
+}
+
+void Compiler::Node::traverse(Compiler::Mode mode) const {
+  getFinalSchema();
+
+  if (mode == EAGER) {
+    for (auto& child: getContent(Content::EXPANDED).nestedNodes) {
+      child.second->traverse(mode);
+    }
+  }
 }
 
 void Compiler::Node::addError(kj::StringPtr error) const {
@@ -608,15 +666,15 @@ kj::Maybe<NodeTranslator::Resolver::ResolvedName> Compiler::Node::resolve(
   });
 }
 
-Schema Compiler::Node::resolveMaybeBootstrapSchema(uint64_t id) const {
+kj::Maybe<Schema> Compiler::Node::resolveBootstrapSchema(uint64_t id) const {
   KJ_IF_MAYBE(node, module->getCompiler().findNode(id)) {
-    return node->getBootstrapOrFinalSchema();
+    return node->getBootstrapSchema();
   } else {
     KJ_FAIL_REQUIRE("Tried to get schema for ID we haven't seen before.");
   }
 }
 
-Schema Compiler::Node::resolveFinalSchema(uint64_t id) const {
+kj::Maybe<schema::Node::Reader> Compiler::Node::resolveFinalSchema(uint64_t id) const {
   KJ_IF_MAYBE(node, module->getCompiler().findNode(id)) {
     return node->getFinalSchema();
   } else {
@@ -642,7 +700,7 @@ kj::Maybe<const Compiler::CompiledModule&> Compiler::CompiledModule::importRelat
 
 // =======================================================================================
 
-Compiler::Impl::Impl(): finalLoader(*this), workspace(nullptr) {
+Compiler::Impl::Impl(): finalLoader(*this), workspace(*this) {
   // Reflectively interpret the members of Declaration.body.  Any member prefixed by "builtin"
   // defines a builtin declaration visible in the global scope.
   StructSchema::Union declBodySchema =
@@ -655,6 +713,27 @@ Compiler::Impl::Impl(): finalLoader(*this), workspace(nullptr) {
           symbolName, static_cast<Declaration::Body::Which>(member.getIndex()));
     }
   }
+}
+
+Compiler::Impl::~Impl() {}
+
+void Compiler::Impl::clearWorkspace() {
+  auto lock = workspace.lockExclusive();
+
+  // Make sure we reconstruct the workspace even if destroying it throws an exception.
+  KJ_DEFER(kj::ctor(*lock, *this));
+  kj::dtor(*lock);
+}
+
+const Compiler::CompiledModule& Compiler::Impl::add(const Module& parsedModule) const {
+  auto locked = modules.lockExclusive();
+
+  kj::Own<CompiledModule>& slot = (*locked)[&parsedModule];
+  if (slot.get() == nullptr) {
+    slot = kj::heap<CompiledModule>(*this, parsedModule);
+  }
+
+  return *slot;
 }
 
 uint64_t Compiler::Impl::addNode(uint64_t desiredId, Node& node) const {
@@ -698,19 +777,55 @@ kj::Maybe<const Compiler::Node&> Compiler::Impl::lookupBuiltin(kj::StringPtr nam
   }
 }
 
+uint64_t Compiler::Impl::add(const Module& module, Mode mode) const {
+  auto lock = this->workspace.lockShared();
+  auto& node = add(module).getRootNode();
+  if (mode != LAZY) {
+    node.traverse(mode);
+  }
+  return node.getId();
+}
+
+kj::Maybe<uint64_t> Compiler::Impl::lookup(uint64_t parent, kj::StringPtr childName) const {
+  // We know this won't use the workspace, so we need not lock it.
+  KJ_IF_MAYBE(parentNode, findNode(parent)) {
+    return parentNode->lookupMember(childName).map([](const Node& n) { return n.getId(); });
+  } else {
+    KJ_FAIL_REQUIRE("lookup()s parameter 'parent' must be a known ID.", parent);
+  }
+}
+
 void Compiler::Impl::load(const SchemaLoader& loader, uint64_t id) const {
   KJ_IF_MAYBE(node, findNode(id)) {
     if (&loader == &finalLoader) {
-      Workspace workspace;
-      auto lock = this->workspace.lockExclusive();
-      *lock = &workspace;
-      KJ_DEFER(*lock = nullptr);
+      auto lock = this->workspace.lockShared();
       node->getFinalSchema();
     } else {
       // Must be the bootstrap loader.
-      node->getBootstrapOrFinalSchema();
+      node->getBootstrapSchema();
     }
   }
+}
+
+// =======================================================================================
+
+Compiler::Compiler(): impl(kj::heap<Impl>()) {}
+Compiler::~Compiler() {}
+
+uint64_t Compiler::add(const Module& module, Mode mode) const {
+  return impl->add(module, mode);
+}
+
+kj::Maybe<uint64_t> Compiler::lookup(uint64_t parent, kj::StringPtr childName) const {
+  return impl->lookup(parent, childName);
+}
+
+const SchemaLoader& Compiler::getLoader() const {
+  return impl->getFinalLoader();
+}
+
+void Compiler::clearWorkspace() {
+  impl->clearWorkspace();
 }
 
 }  // namespace compiler

@@ -33,9 +33,7 @@
 namespace capnp {
 namespace compiler {
 
-namespace {
-
-uint64_t randomId() {
+uint64_t generateRandomId() {
   uint64_t result;
 
   int fd;
@@ -47,8 +45,6 @@ uint64_t randomId() {
 
   return result | (1ull << 63);
 }
-
-}  // namespace
 
 void parseFile(List<Statement>::Reader statements, ParsedFile::Builder result,
                const ErrorReporter& errorReporter) {
@@ -87,7 +83,7 @@ void parseFile(List<Statement>::Reader statements, ParsedFile::Builder result,
   }
 
   if (fileDecl.getId().which() != Declaration::Id::UID) {
-    uint64_t id = randomId();
+    uint64_t id = generateRandomId();
     fileDecl.getId().initUid().setValue(id);
     errorReporter.addError(0, 0,
         kj::str("File does not declare an ID.  I've generated one for you.  Add this line to your "
@@ -583,11 +579,23 @@ CapnpParser::CapnpParser(Orphanage orphanageParam, const ErrorReporter& errorRep
   // -----------------------------------------------------------------
 
   parsers.usingDecl = arena.copy(p::transform(
-      p::sequence(keyword("using"), identifier, op("="), parsers.declName),
-      [this](Located<Text::Reader>&& name, Orphan<DeclName>&& target) -> DeclParserResult {
+      p::sequence(keyword("using"), p::optional(p::sequence(identifier, op("="))),
+                  parsers.declName),
+      [this](kj::Maybe<Located<Text::Reader>>&& name, Orphan<DeclName>&& target)
+          -> DeclParserResult {
         auto decl = orphanage.newOrphan<Declaration>();
         auto builder = decl.get();
-        name.copyTo(builder.initName());
+        KJ_IF_MAYBE(n, name) {
+          n->copyTo(builder.initName());
+        } else {
+          auto targetPath = target.getReader().getMemberPath();
+          if (targetPath.size() == 0) {
+            errorReporter.addErrorOn(
+                target.getReader(), "'using' declaration without '=' must use a qualified path.");
+          } else {
+            builder.setName(targetPath[targetPath.size() - 1]);
+          }
+        }
         // no id, no annotations for using decl
         builder.getBody().initUsingDecl().adoptTarget(kj::mv(target));
         return DeclParserResult(kj::mv(decl));
@@ -687,7 +695,7 @@ CapnpParser::CapnpParser(Orphanage orphanageParam, const ErrorReporter& errorRep
         for (uint i = 0; i < annotations.size(); i++) {
           list.adoptWithCaveats(i, kj::mv(annotations[i]));
         }
-        builder.getBody().initGroupDecl();
+        builder.getBody().initUnionDecl();
         return DeclParserResult(kj::mv(decl), parsers.structLevelDecl);
       }));
 

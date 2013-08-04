@@ -134,6 +134,8 @@ void inlineRequireFailure(
     const char* file, int line, const char* expectation, const char* macroArgs,
     const char* message = nullptr) KJ_NORETURN;
 
+void unreachable() KJ_NORETURN;
+
 }  // namespace _ (private)
 
 #ifdef NDEBUG
@@ -146,6 +148,16 @@ void inlineRequireFailure(
 // check preconditions inside inline methods.  KJ_IREQUIRE is particularly useful in that
 // it will be enabled depending on whether the application is compiled in debug mode rather than
 // whether libkj is.
+#endif
+
+#define KJ_UNREACHABLE ::kj::_::unreachable();
+// Put this on code paths that cannot be reached to suppress compiler warnings about missing
+// returns.
+
+#if __clang__
+#define KJ_CLANG_KNOWS_THIS_IS_UNREACHABLE_BUT_GCC_DOESNT
+#else
+#define KJ_CLANG_KNOWS_THIS_IS_UNREACHABLE_BUT_GCC_DOESNT KJ_UNREACHABLE
 #endif
 
 // #define KJ_STACK_ARRAY(type, name, size, minStack, maxStack)
@@ -393,6 +405,10 @@ private:  // internal interface used by friends only
       : isSet(true) {
     ctor(value, kj::mv(t));
   }
+  inline NullableValue(T& t)
+      : isSet(true) {
+    ctor(value, t);
+  }
   inline NullableValue(const T& t)
       : isSet(true) {
     ctor(value, t);
@@ -432,6 +448,19 @@ private:  // internal interface used by friends only
       isSet = other.isSet;
       if (isSet) {
         ctor(value, kj::mv(other.value));
+      }
+    }
+    return *this;
+  }
+
+  inline NullableValue& operator=(NullableValue& other) {
+    if (&other != this) {
+      if (isSet) {
+        dtor(value);
+      }
+      isSet = other.isSet;
+      if (isSet) {
+        ctor(value, other.value);
       }
     }
     return *this;
@@ -488,6 +517,7 @@ class Maybe {
 public:
   Maybe(): ptr(nullptr) {}
   Maybe(T&& t) noexcept(noexcept(T(instance<T&&>()))): ptr(kj::mv(t)) {}
+  Maybe(T& t): ptr(t) {}
   Maybe(const T& t): ptr(t) {}
   Maybe(const T* t) noexcept: ptr(t) {}
   Maybe(Maybe&& other) noexcept(noexcept(T(instance<T&&>()))): ptr(kj::mv(other.ptr)) {}
@@ -509,6 +539,7 @@ public:
   Maybe(decltype(nullptr)) noexcept: ptr(nullptr) {}
 
   inline Maybe& operator=(Maybe&& other) { ptr = kj::mv(other.ptr); return *this; }
+  inline Maybe& operator=(Maybe& other) { ptr = other.ptr; return *this; }
   inline Maybe& operator=(const Maybe& other) { ptr = other.ptr; return *this; }
 
   inline bool operator==(decltype(nullptr)) const { return ptr == nullptr; }
@@ -733,7 +764,7 @@ public:
   KJ_DISALLOW_COPY(Deferred);
 
   // This move constructor is usually optimized away by the compiler.
-  inline Deferred(Deferred&& other): func(kj::mv(other.func)) {
+  inline Deferred(Deferred&& other): func(kj::mv(other.func)), canceled(false) {
     other.canceled = true;
   }
 private:
