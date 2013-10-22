@@ -507,7 +507,9 @@ CrossThreadPromiseNodeBase::CrossThreadPromiseNodeBase(
     const EventLoop& loop, Own<PromiseNode>&& dependency, ExceptionOrValue& resultRef)
     : Event(loop), dependency(kj::mv(dependency)), resultRef(resultRef) {
   KJ_DREQUIRE(this->dependency->isSafeEventLoop(loop));
+}
 
+void CrossThreadPromiseNodeBase::init() {
   // The constructor may be called from any thread, so before we can even call onReady() we need
   // to switch threads.  We yield here so that the event is added to the end of the queue, which
   // ensures that multiple events added in sequence are added in order.  If we used PREEMPT, events

@@ -1139,6 +1139,9 @@ public:
   bool onReady(EventLoop::Event& event) noexcept override;
   Maybe<const EventLoop&> getSafeEventLoop() noexcept override;
 
+protected:
+  void init();
+
 private:
   Own<PromiseNode> dependency;
   EventLoop::Event* onReadyEvent = nullptr;
@@ -1154,7 +1157,9 @@ template <typename T>
 class CrossThreadPromiseNode final: public CrossThreadPromiseNodeBase {
 public:
   CrossThreadPromiseNode(const EventLoop& loop, Own<PromiseNode>&& dependency)
-      : CrossThreadPromiseNodeBase(loop, kj::mv(dependency), result) {}
+      : CrossThreadPromiseNodeBase(loop, kj::mv(dependency), result) {
+    init();
+  }
 
   void get(ExceptionOrValue& output) noexcept override {
     output.as<T>() = kj::mv(result);
