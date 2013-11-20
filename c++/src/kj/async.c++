@@ -189,7 +189,10 @@ void SimpleEventLoop::wake() const {
   }
 
 SimpleEventLoop::SimpleEventLoop() {
-  KJ_PTHREAD_CALL(pthread_mutex_init(&mutex, nullptr));
+  pthread_mutexattr_t attr;
+  KJ_PTHREAD_CALL(pthread_mutexattr_init(&attr));
+  KJ_PTHREAD_CALL(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE));
+  KJ_PTHREAD_CALL(pthread_mutex_init(&mutex, &attr));
   KJ_PTHREAD_CALL(pthread_cond_init(&condvar, nullptr));
 }
 SimpleEventLoop::~SimpleEventLoop() noexcept(false) {
