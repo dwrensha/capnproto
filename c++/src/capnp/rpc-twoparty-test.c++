@@ -103,7 +103,7 @@ TEST(TwoPartyNetwork, Basic) {
   kj::Thread thread([&]() {
     runServer(kj::mv(pipe.ends[1]), callCount);
   });
-  KJ_DEFER(thread.sendSignal(SIGUSR2));
+  KJ_DEFER(thread.sendSignal(SIGUSR2); auto x = kj::mv(pipe.ends[0]););
 
   // Set up the client-side objects.
   kj::UnixEventLoop loop;
