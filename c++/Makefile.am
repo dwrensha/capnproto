@@ -298,7 +298,7 @@ libcapnpc_la_SOURCES=                                          \
   src/capnp/compiler/compiler.c++                              \
   src/capnp/schema-parser.c++
 
-bin_PROGRAMS = capnp capnpc-capnp capnpc-c++
+bin_PROGRAMS = capnp capnpc-capnp capnpc-c++ capnpc-java
 
 capnp_LDADD = libcapnpc.la libcapnp.la libkj.la $(PTHREAD_LIBS)
 capnp_SOURCES =                                                \
@@ -311,6 +311,9 @@ capnpc_capnp_SOURCES = src/capnp/compiler/capnpc-capnp.c++
 
 capnpc_c___LDADD = libcapnp.la libkj.la $(PTHREAD_LIBS)
 capnpc_c___SOURCES = src/capnp/compiler/capnpc-c++.c++
+
+capnpc_java_LDADD = libcapnp.la libkj.la $(PTHREAD_LIBS)
+capnpc_java_SOURCES = src/capnp/compiler/capnpc-java.c++
 
 # Symlink capnpc -> capnp.  The capnp binary will behave like the old capnpc
 # binary (i.e. like "capnp compile") when invoked via this symlink.
