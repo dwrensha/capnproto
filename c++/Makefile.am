@@ -100,6 +100,7 @@ maintainer-clean-local:
 
 public_capnpc_inputs =                                         \
   src/capnp/c++.capnp                                          \
+  src/capnp/java.capnp                                         \
   src/capnp/schema.capnp                                       \
   src/capnp/rpc.capnp                                          \
   src/capnp/rpc-twoparty.capnp                                 \
